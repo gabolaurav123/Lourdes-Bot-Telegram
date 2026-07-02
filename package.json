@@ -1,0 +1,41 @@
+{
+  "name": "telegram-consent-crm",
+  "version": "0.1.0",
+  "private": true,
+  "description": "CRM web para Telegram personal con consentimiento, IA, inbox, leads, automatizaciones y campanas opt-in.",
+  "type": "module",
+  "workspaces": [
+    "apps/api",
+    "apps/web",
+    "packages/db",
+    "packages/shared",
+    "worker"
+  ],
+  "scripts": {
+    "dev": "concurrently -k \"npm run dev -w @crm/api\" \"npm run dev -w @crm/web\" \"npm run dev -w @crm/worker\"",
+    "dev:api": "npm run dev -w @crm/api",
+    "dev:web": "npm run dev -w @crm/web",
+    "dev:worker": "npm run dev -w @crm/worker",
+    "build": "npm run build --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "db:generate": "prisma generate --schema packages/db/prisma/schema.prisma",
+    "db:migrate": "prisma migrate dev --schema packages/db/prisma/schema.prisma",
+    "db:deploy": "prisma migrate deploy --schema packages/db/prisma/schema.prisma",
+    "db:studio": "prisma studio --schema packages/db/prisma/schema.prisma",
+    "db:seed": "tsx packages/db/prisma/seed.ts"
+  },
+  "devDependencies": {
+    "@types/express": "4.17.25",
+    "@types/express-serve-static-core": "4.19.6",
+    "@types/node": "^22.13.10",
+    "concurrently": "^9.1.2",
+    "prisma": "^6.4.1",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3"
+  },
+  "overrides": {
+    "esbuild": "0.28.1",
+    "@types/express": "4.17.25",
+    "@types/express-serve-static-core": "4.19.6"
+  }
+}

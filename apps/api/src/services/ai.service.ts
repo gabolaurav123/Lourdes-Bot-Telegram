@@ -1,0 +1,136 @@
+import OpenAI from "openai";
+import type { Conversation, Lead } from "@prisma/client";
+import { containsStopPhrase, DEFAULT_AI_PROMPT, canMessageLead } from "@crm/shared";
+import { config } from "../config";
+import { decryptSecret, encryptSecret } from "../lib/crypto";
+import { toInputJson } from "../lib/json";
+import { prisma } from "../lib/prisma";
+
+class AiService {
+  private clientFor(apiKey: string) {
+    return new OpenAI({ apiKey });
+  }
+
+  async getConfig() {
+    return prisma.aiConfig.upsert({
+      where: { id: "default" },
+      update: {},
+      create: {
+        id: "default",
+        model: config.openai.model,
+        promptBase: DEFAULT_AI_PROMPT,
+        globalEnabled: config.nodeEnv === "development" ? false : config.openai.apiKey.length > 0
+      }
+    });
+  }
+
+  async updateConfig(input: {
+    model?: string;
+    apiKey?: string;
+    promptBase?: string;
+    temperature?: number;
+    maxTokens?: number;
+    tone?: string;
+    maxChars?: number;
+    allowedHours?: Record<string, unknown>;
+    forbiddenWords?: string[];
+    globalEnabled?: boolean;
+  }) {
+    return prisma.aiConfig.upsert({
+      where: { id: "default" },
+      create: {
+        id: "default",
+        model: input.model ?? config.openai.model,
+        promptBase: input.promptBase ?? DEFAULT_AI_PROMPT,
+        encryptedApiKey: input.apiKey ? encryptSecret(input.apiKey) : undefined,
+        temperature: input.temperature ?? 0.4,
+        maxTokens: input.maxTokens ?? 400,
+        tone: input.tone ?? "calido, breve y natural",
+        maxChars: input.maxChars ?? 700,
+        allowedHours: toInputJson(input.allowedHours ?? {}),
+        forbiddenWords: input.forbiddenWords ?? [],
+        globalEnabled: input.globalEnabled ?? false
+      },
+      update: {
+        model: input.model,
+        promptBase: input.promptBase,
+        encryptedApiKey: input.apiKey ? encryptSecret(input.apiKey) : undefined,
+        temperature: input.temperature,
+        maxTokens: input.maxTokens,
+        tone: input.tone,
+        maxChars: input.maxChars,
+        allowedHours: input.allowedHours === undefined ? undefined : toInputJson(input.allowedHours),
+        forbiddenWords: input.forbiddenWords,
+        globalEnabled: input.globalEnabled
+      }
+    });
+  }
+
+  async generateReply(lead: Lead, conversation: Conversation, inboundText: string) {
+    const aiConfig = await this.getConfig();
+    if (!aiConfig.globalEnabled || !lead.aiEnabled) return null;
+    if (containsStopPhrase(inboundText)) return null;
+
+    const permission = canMessageLead(
+      {
+        status: lead.status,
+        optInCommercial: lead.optInCommercial,
+        ageConfirmed: lead.ageConfirmed,
+        followUpAllowed: lead.followUpAllowed,
+        userWroteFirst: lead.userWroteFirst,
+        conversationActive: lead.conversationActive
+      },
+      "ai_reply"
+    );
+    if (!permission.allowed) return null;
+
+    const apiKey = decryptSecret(aiConfig.encryptedApiKey) || config.openai.apiKey;
+    if (!apiKey) return null;
+
+    const history = await prisma.message.findMany({
+      where: { conversationId: conversation.id },
+      orderBy: { createdAt: "desc" },
+      take: 12
+    });
+
+    const forbidden = aiConfig.forbiddenWords.join(", ");
+    const system = [
+      aiConfig.promptBase,
+      `Tono: ${aiConfig.tone}. Maximo ${aiConfig.maxChars} caracteres.`,
+      "Reglas obligatorias: no envies contenido sensible si el lead no tiene ageConfirmed=true; si pide no recibir mensajes, responde una sola vez de forma amable y no insistas; no inventes pagos ni promesas.",
+      forbidden ? `Palabras prohibidas: ${forbidden}` : ""
+    ].filter(Boolean).join("\n");
+
+    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
+      { role: "system", content: system },
+      {
+        role: "user",
+        content: `Datos del lead: nombre=${lead.name}, username=${lead.username ?? ""}, estado=${lead.status}, optIn=${lead.optInCommercial}, mayorEdad=${lead.ageConfirmed}, seguimiento=${lead.followUpAllowed}.`
+      },
+      ...history.reverse().map((message) => ({
+        role: message.direction === "INBOUND" ? "user" as const : "assistant" as const,
+        content: message.body ?? "[imagen]"
+      })),
+      { role: "user", content: inboundText }
+    ];
+
+    const response = await this.clientFor(apiKey).chat.completions.create({
+      model: aiConfig.model,
+      temperature: aiConfig.temperature,
+      max_tokens: aiConfig.maxTokens,
+      messages
+    });
+
+    const text = response.choices[0]?.message?.content?.trim();
+    if (!text) return null;
+
+    const lower = text.toLowerCase();
+    if (aiConfig.forbiddenWords.some((word) => lower.includes(word.toLowerCase()))) {
+      return "Prefiero confirmarte eso manualmente para darte la informacion correcta.";
+    }
+
+    return text.slice(0, aiConfig.maxChars);
+  }
+}
+
+export const aiService = new AiService();

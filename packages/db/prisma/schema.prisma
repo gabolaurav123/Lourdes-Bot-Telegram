@@ -1,0 +1,412 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum AdminRole {
+  OWNER
+  ADMIN
+  VENDEDOR
+  SOPORTE
+}
+
+enum TelegramSessionStatus {
+  DISCONNECTED
+  QR_PENDING
+  CONNECTED
+  EXPIRED
+  ERROR
+}
+
+enum ConversationType {
+  PRIVATE
+  GROUP
+  CHANNEL
+}
+
+enum LeadStatus {
+  NUEVO
+  INTERESADO
+  CALIENTE
+  RESPONDIO
+  PENDIENTE_PAGO
+  COMPRO
+  NO_INTERESADO
+  NO_VOLVER_A_ESCRIBIR
+  BLOQUEADO
+  ERROR
+  REQUIERE_REVISION_MANUAL
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+  INTERNAL
+  SYSTEM
+}
+
+enum MessageStatus {
+  RECEIVED
+  QUEUED
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum CampaignStatus {
+  DRAFT
+  SCHEDULED
+  ACTIVE
+  PAUSED
+  FINISHED
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  SENT
+  SKIPPED
+  FAILED
+}
+
+enum AutomationStatus {
+  ACTIVE
+  INACTIVE
+}
+
+enum AutomationRunStatus {
+  SCHEDULED
+  EXECUTED
+  SKIPPED
+  FAILED
+  CANCELLED
+}
+
+enum TemplateCategory {
+  BIENVENIDA
+  CONFIRMACION_EDAD
+  PRECIO
+  SEGUIMIENTO_24H
+  SEGUIMIENTO_48H
+  PROMO
+  CIERRE_SUAVE
+  POST_COMPRA
+  NO_INTERESADO
+  STOP
+}
+
+enum PurchaseStatus {
+  PENDIENTE
+  CONFIRMADO
+  RECHAZADO
+}
+
+model AdminUser {
+  id           String     @id @default(cuid())
+  email        String     @unique
+  passwordHash String
+  role         AdminRole  @default(SOPORTE)
+  active       Boolean    @default(true)
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+  lastLoginAt  DateTime?
+  assigned     Conversation[] @relation("AssignedConversations")
+  auditLogs    AuditLog[]
+  messages     Message[]  @relation("SentByAdmin")
+}
+
+model TelegramSession {
+  id               String                @id @default(cuid())
+  label            String                @unique @default("primary")
+  status           TelegramSessionStatus @default(DISCONNECTED)
+  encryptedSession String?
+  phone            String?
+  username         String?
+  displayName      String?
+  qrCodeDataUrl    String?
+  qrExpiresAt      DateTime?
+  lastError        String?
+  connectedAt      DateTime?
+  disconnectedAt   DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
+}
+
+model Lead {
+  id                    String          @id @default(cuid())
+  telegramChatId        String?         @unique
+  telegramUserId        String?
+  name                  String
+  username              String?
+  phone                 String?
+  source                String          @default("telegram")
+  status                LeadStatus      @default(NUEVO)
+  notes                 String?
+  firstContactAt        DateTime        @default(now())
+  lastInteractionAt     DateTime?
+  lastInboundMessage    String?
+  lastOutboundMessage   String?
+  optInCommercial       Boolean         @default(false)
+  ageConfirmed          Boolean         @default(false)
+  followUpAllowed       Boolean         @default(false)
+  purchaseStatus        PurchaseStatus?
+  totalSpent            Decimal         @default(0) @db.Decimal(12, 2)
+  aiEnabled             Boolean         @default(true)
+  userWroteFirst        Boolean         @default(false)
+  conversationActive    Boolean         @default(false)
+  isContact             Boolean         @default(false)
+  isGroup               Boolean         @default(false)
+  isChannel             Boolean         @default(false)
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+  conversations         Conversation[]
+  messages              Message[]
+  tags                  LeadTag[]
+  campaignRecipients    CampaignRecipient[]
+  automationRuns        AutomationRun[]
+  purchases             Purchase[]
+
+  @@index([status])
+  @@index([optInCommercial, ageConfirmed, followUpAllowed])
+}
+
+model Conversation {
+  id                 String           @id @default(cuid())
+  telegramChatId     String           @unique
+  telegramUserId     String?
+  type               ConversationType @default(PRIVATE)
+  name               String
+  username           String?
+  phone              String?
+  lastMessage        String?
+  lastMessageAt      DateTime?
+  unreadCount        Int              @default(0)
+  responded          Boolean          @default(false)
+  userWroteFirst     Boolean          @default(false)
+  conversationActive Boolean          @default(false)
+  isContact          Boolean          @default(false)
+  leadId             String?
+  assignedToId       String?
+  createdAt          DateTime         @default(now())
+  updatedAt          DateTime         @updatedAt
+  lead               Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  assignedTo         AdminUser?       @relation("AssignedConversations", fields: [assignedToId], references: [id], onDelete: SetNull)
+  messages           Message[]
+
+  @@index([lastMessageAt])
+  @@index([type])
+}
+
+model Message {
+  id                String           @id @default(cuid())
+  telegramMessageId String?
+  conversationId    String
+  leadId            String?
+  direction         MessageDirection
+  status            MessageStatus    @default(RECEIVED)
+  body              String?
+  mediaAssetId      String?
+  aiGenerated       Boolean          @default(false)
+  sensitive         Boolean          @default(false)
+  sentById          String?
+  error             String?
+  receivedAt        DateTime?
+  sentAt            DateTime?
+  createdAt         DateTime         @default(now())
+  conversation      Conversation     @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  lead              Lead?            @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  mediaAsset        MediaAsset?      @relation(fields: [mediaAssetId], references: [id], onDelete: SetNull)
+  sentBy            AdminUser?       @relation("SentByAdmin", fields: [sentById], references: [id], onDelete: SetNull)
+
+  @@index([conversationId, createdAt])
+  @@index([leadId, createdAt])
+}
+
+model Tag {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  color     String    @default("#0f766e")
+  createdAt DateTime  @default(now())
+  leads     LeadTag[]
+}
+
+model LeadTag {
+  leadId     String
+  tagId      String
+  assignedAt DateTime @default(now())
+  lead       Lead     @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  tag        Tag      @relation(fields: [tagId], references: [id], onDelete: Cascade)
+
+  @@id([leadId, tagId])
+}
+
+model Template {
+  id          String           @id @default(cuid())
+  name        String
+  category    TemplateCategory
+  text        String
+  imageId     String?
+  variables   Json             @default("[]")
+  active      Boolean          @default(true)
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+  image       MediaAsset?      @relation(fields: [imageId], references: [id], onDelete: SetNull)
+}
+
+model Campaign {
+  id           String          @id @default(cuid())
+  name         String
+  description  String?
+  status       CampaignStatus  @default(DRAFT)
+  segment      Json            @default("{}")
+  exclusions   Json            @default("{}")
+  message      String
+  imageId      String?
+  buttonText   String?
+  link         String?
+  startAt      DateTime?
+  sendTime     String          @default("10:00")
+  dailyLimit   Int             @default(50)
+  pauseSeconds Int             @default(90)
+  allowedHours Json            @default("{}")
+  sensitive    Boolean         @default(false)
+  stats        Json            @default("{}")
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  image        MediaAsset?     @relation(fields: [imageId], references: [id], onDelete: SetNull)
+  recipients   CampaignRecipient[]
+}
+
+model CampaignRecipient {
+  id          String                  @id @default(cuid())
+  campaignId  String
+  leadId      String
+  status      CampaignRecipientStatus @default(PENDING)
+  scheduledAt DateTime?
+  sentAt      DateTime?
+  attempts    Int                     @default(0)
+  error       String?
+  createdAt   DateTime                @default(now())
+  campaign    Campaign                @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  lead        Lead                    @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, leadId])
+  @@index([status, scheduledAt])
+}
+
+model Automation {
+  id             String           @id @default(cuid())
+  name           String
+  status         AutomationStatus @default(INACTIVE)
+  trigger        String
+  conditions     Json             @default("{}")
+  delaySeconds   Int              @default(0)
+  action         String
+  actionPayload  Json             @default("{}")
+  executionLimit Int              @default(1)
+  segment        Json             @default("{}")
+  allowedHours   Json             @default("{}")
+  priority       Int              @default(0)
+  sensitive      Boolean          @default(false)
+  allowRepeat    Boolean          @default(false)
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  runs           AutomationRun[]
+
+  @@index([status, trigger])
+}
+
+model AutomationRun {
+  id           String              @id @default(cuid())
+  automationId String
+  leadId       String
+  status       AutomationRunStatus @default(SCHEDULED)
+  scheduledFor DateTime
+  executedAt   DateTime?
+  payload      Json                @default("{}")
+  error        String?
+  createdAt    DateTime            @default(now())
+  automation   Automation          @relation(fields: [automationId], references: [id], onDelete: Cascade)
+  lead         Lead                @relation(fields: [leadId], references: [id], onDelete: Cascade)
+
+  @@index([status, scheduledFor])
+  @@index([leadId, automationId])
+}
+
+model MediaAsset {
+  id             String      @id @default(cuid())
+  key            String      @unique
+  url            String
+  storage        String      @default("local")
+  filename       String
+  originalName   String
+  mimeType       String
+  sizeBytes      Int
+  width          Int?
+  height         Int?
+  checksum       String?
+  deletedAt      DateTime?
+  createdAt      DateTime    @default(now())
+  campaigns      Campaign[]
+  templates      Template[]
+  messages       Message[]
+  purchaseReceipts Purchase[] @relation("PurchaseReceipt")
+}
+
+model Purchase {
+  id             String         @id @default(cuid())
+  leadId         String
+  date           DateTime       @default(now())
+  amount         Decimal        @db.Decimal(12, 2)
+  paymentMethod  String
+  plan           String
+  notes          String?
+  receiptAssetId String?
+  status         PurchaseStatus @default(PENDIENTE)
+  createdAt      DateTime       @default(now())
+  updatedAt      DateTime       @updatedAt
+  lead           Lead           @relation(fields: [leadId], references: [id], onDelete: Cascade)
+  receipt        MediaAsset?    @relation("PurchaseReceipt", fields: [receiptAssetId], references: [id], onDelete: SetNull)
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  sensitive Boolean  @default(false)
+  updatedAt DateTime @updatedAt
+}
+
+model AuditLog {
+  id         String     @id @default(cuid())
+  actorId    String?
+  action     String
+  entityType String?
+  entityId   String?
+  metadata   Json       @default("{}")
+  ip         String?
+  userAgent  String?
+  createdAt  DateTime   @default(now())
+  actor      AdminUser? @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([action, createdAt])
+  @@index([entityType, entityId])
+}
+
+model AiConfig {
+  id              String   @id @default(cuid())
+  model           String   @default("gpt-4.1-mini")
+  encryptedApiKey String?
+  promptBase      String
+  temperature     Float    @default(0.4)
+  maxTokens       Int      @default(400)
+  tone            String   @default("calido, breve y natural")
+  maxChars        Int      @default(700)
+  allowedHours    Json     @default("{}")
+  forbiddenWords  String[] @default([])
+  globalEnabled   Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
