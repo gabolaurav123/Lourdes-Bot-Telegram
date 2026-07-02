@@ -145,7 +145,68 @@ Acciones soportadas:
 - `STOP_AI`
 - `STOP_AUTOMATIONS`
 
-## Deploy VPS / Railway / Render / Seenode
+## Deploy Seenode en un solo servicio
+
+Para reducir costo, puedes desplegar todo en un unico Web Service. Ese servicio:
+
+- Sirve la web React desde `apps/web/dist`.
+- Expone la API en `/api`.
+- Corre el worker BullMQ en paralelo dentro del mismo runtime.
+
+Configura en Seenode:
+
+- Type: `Web Service`
+- Repository: `gabolaurav123/Lourdes-Bot-Telegram`
+- Branch: `main`
+- Root Directory: vacio
+- Port: `4000`
+
+Build Command:
+
+```bash
+npm ci --include=dev && npm run build:single
+```
+
+Start Command:
+
+```bash
+npm run db:deploy && npm run db:seed && npm run start:single
+```
+
+Variables minimas:
+
+```env
+NODE_ENV=production
+API_PORT=4000
+APP_URL=https://TU-SERVICIO.seenode.app
+API_URL=https://TU-SERVICIO.seenode.app
+DATABASE_URL=postgresql://...
+REDIS_URL=redis://...
+JWT_SECRET=replace-with-at-least-32-random-characters
+ENCRYPTION_KEY=replace-with-32-byte-base64-key
+ADMIN_BOOTSTRAP_EMAIL=tu-email
+ADMIN_BOOTSTRAP_PASSWORD=tu-password-seguro
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=your_telegram_api_hash
+TELEGRAM_SESSION_LABEL=primary
+OPENAI_API_KEY=
+OPENAI_MODEL=gpt-4.1-mini
+MEDIA_STORAGE=s3
+MEDIA_MAX_MB=8
+S3_ENDPOINT=
+S3_REGION=
+S3_BUCKET=
+S3_ACCESS_KEY_ID=
+S3_SECRET_ACCESS_KEY=
+DEFAULT_TIMEZONE=America/La_Paz
+GLOBAL_AI_ENABLED=false
+GLOBAL_CAMPAIGNS_ENABLED=true
+PAYMENT_LINK=https://example.com/pay
+```
+
+Tambien necesitas PostgreSQL y Redis. Pueden ser servicios administrados externos o servicios de Seenode si los tienes disponibles. Sin PostgreSQL no hay CRM; sin Redis no funcionan colas, campanas y automatizaciones.
+
+## Deploy VPS / Railway / Render / Seenode separado
 
 1. Configura PostgreSQL y Redis administrados o usa `docker-compose.yml`.
 2. Define variables de entorno reales.
