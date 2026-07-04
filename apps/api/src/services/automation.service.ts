@@ -1,7 +1,6 @@
 import { canMessageLead } from "@crm/shared";
 import { toInputJson } from "../lib/json";
 import { prisma } from "../lib/prisma";
-import { automationQueue } from "./queues";
 
 class AutomationService {
   async scheduleForTrigger(trigger: string, leadId: string, payload: Record<string, unknown> = {}) {
@@ -46,11 +45,6 @@ class AutomationService {
           payload: toInputJson(payload)
         }
       });
-      await automationQueue.add(
-        "run-automation",
-        { runId: run.id },
-        { delay: Math.max(0, scheduledFor.getTime() - Date.now()), jobId: `automation:${run.id}`, removeOnComplete: true }
-      );
       scheduled.push(run);
     }
 

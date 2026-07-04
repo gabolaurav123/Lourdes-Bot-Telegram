@@ -1,13 +1,23 @@
 import "dotenv/config";
-import { startAutomationWorker } from "./processors/automations";
-import { startCampaignWorker } from "./processors/campaigns";
-import { startFollowupWorker } from "./processors/followups";
+import { pollAutomations } from "./processors/automations";
+import { pollCampaigns } from "./processors/campaigns";
 
-const workers = [startCampaignWorker(), startAutomationWorker(), startFollowupWorker()];
+let running = false;
 
-for (const worker of workers) {
-  worker.on("completed", (job) => console.log(`Job completed: ${worker.name}:${job.id}`));
-  worker.on("failed", (job, error) => console.error(`Job failed: ${worker.name}:${job?.id}`, error.message));
+async function tick() {
+  if (running) return;
+  running = true;
+  try {
+    await pollAutomations();
+    await pollCampaigns();
+  } catch (error) {
+    console.error("Worker tick failed:", error instanceof Error ? error.message : error);
+  } finally {
+    running = false;
+  }
 }
 
-console.log("CRM worker running");
+void tick();
+setInterval(() => void tick(), Number(process.env.WORKER_POLL_INTERVAL_MS ?? 10_000));
+
+console.log("CRM worker running with PostgreSQL polling");

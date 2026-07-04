@@ -15,7 +15,6 @@ export const config = {
   apiUrl: process.env.API_URL ?? "http://localhost:4000",
   jwtSecret: required("JWT_SECRET", "dev-only-change-me-please-32-chars"),
   encryptionKey: required("ENCRYPTION_KEY", "dev-only-change-me-please-32-chars"),
-  redisUrl: process.env.REDIS_URL ?? "redis://localhost:6379",
   telegram: {
     apiId: Number(process.env.TELEGRAM_API_ID ?? 0),
     apiHash: process.env.TELEGRAM_API_HASH ?? "",

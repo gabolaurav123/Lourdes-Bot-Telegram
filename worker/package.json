@@ -14,9 +14,7 @@
     "@crm/db": "*",
     "@crm/shared": "*",
     "@prisma/client": "^6.4.1",
-    "bullmq": "^5.41.7",
     "dotenv": "^16.4.7",
-    "ioredis": "^5.5.0",
     "telegram": "^2.26.22"
   },
   "devDependencies": {

@@ -1,6 +1,6 @@
 # Telegram Consent CRM
 
-CRM web para operar una cuenta personal de Telegram como inbox comercial con consentimiento, trazabilidad y controles de seguridad. Incluye React + Vite + TailwindCSS, API Node/Express, Prisma/PostgreSQL, BullMQ/Redis, worker, GramJS, OpenAI y almacenamiento local/S3-compatible para imagenes.
+CRM web para operar una cuenta personal de Telegram como inbox comercial con consentimiento, trazabilidad y controles de seguridad. Incluye React + Vite + TailwindCSS, API Node/Express, Prisma/PostgreSQL, worker con polling en base de datos, GramJS, OpenAI y almacenamiento local/S3-compatible para imagenes.
 
 ## Como se despliega
 
@@ -22,10 +22,9 @@ Tambien necesitas:
 
 ```txt
 4. PostgreSQL  Base de datos
-5. Redis       Cola de trabajos
 ```
 
-PostgreSQL y Redis pueden estar en Seenode si te lo ofrece, o en servicios externos como Neon/Supabase para PostgreSQL y Upstash para Redis.
+Usa tu base de datos de Neon como PostgreSQL. **No necesitas Redis**: el Worker revisa PostgreSQL cada pocos segundos y ejecuta automatizaciones/campanas pendientes desde ahi.
 
 ## Seenode paso a paso
 
@@ -134,7 +133,6 @@ APP_URL=https://TU-WEB.seenode.app
 API_URL=https://TU-API.seenode.app
 
 DATABASE_URL=postgresql://USUARIO:PASSWORD@HOST:PUERTO/DB?schema=public
-REDIS_URL=redis://default:PASSWORD@HOST:PUERTO
 
 JWT_SECRET=clave-larga-random-de-minimo-32-caracteres
 ENCRYPTION_KEY=clave-base64-de-32-bytes
@@ -170,12 +168,12 @@ VITE_API_URL=https://TU-API.seenode.app
 ```env
 NODE_ENV=production
 DATABASE_URL=postgresql://USUARIO:PASSWORD@HOST:PUERTO/DB?schema=public
-REDIS_URL=redis://default:PASSWORD@HOST:PUERTO
 ENCRYPTION_KEY=la-misma-del-api
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=tu_api_hash
 TELEGRAM_SESSION_LABEL=primary
 MEDIA_LOCAL_DIR=storage/media
+WORKER_POLL_INTERVAL_MS=10000
 ```
 
 ## Donde conseguir Telegram API ID y API HASH
@@ -219,7 +217,7 @@ apps/web          Frontend React/Vite/Tailwind
 apps/api          API Express, auth, CRM, Telegram, IA, media
 packages/db       Prisma schema, migracion inicial y seed
 packages/shared   Constantes, validadores y reglas de consentimiento
-worker            BullMQ para campanas, automatizaciones y seguimientos
+worker            Procesador de campanas, automatizaciones y seguimientos usando PostgreSQL
 storage/media     Imagenes locales en desarrollo
 ```
 
@@ -228,7 +226,7 @@ storage/media     Imagenes locales en desarrollo
 ```bash
 cp .env.example .env
 npm install
-docker compose up -d postgres redis
+docker compose up -d postgres
 npm run db:generate
 npm run db:migrate
 npm run db:seed

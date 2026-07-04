@@ -2,7 +2,6 @@ import type { Campaign, Lead } from "@prisma/client";
 import { EXCLUDED_LEAD_STATUSES, canMessageLead } from "@crm/shared";
 import { toInputJson } from "../lib/json";
 import { prisma } from "../lib/prisma";
-import { campaignQueue } from "./queues";
 
 type Segment = {
   status?: string;
@@ -69,14 +68,15 @@ class CampaignService {
     const campaign = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
     const leads = await this.eligibleLeads(campaign);
 
-    for (const lead of leads) {
+    const startAt = campaign.startAt ?? new Date();
+    for (const [index, lead] of leads.entries()) {
       await prisma.campaignRecipient.upsert({
         where: { campaignId_leadId: { campaignId, leadId: lead.id } },
         update: {},
         create: {
           campaignId,
           leadId: lead.id,
-          scheduledAt: campaign.startAt ?? new Date()
+          scheduledAt: new Date(startAt.getTime() + index * campaign.pauseSeconds * 1000)
         }
       });
     }
@@ -93,7 +93,6 @@ class CampaignService {
         stats: toInputJson({ preparedRecipients: count })
       }
     });
-    await campaignQueue.add("run-campaign", { campaignId }, { jobId: `campaign:${campaignId}`, removeOnComplete: true });
     return campaign;
   }
 
