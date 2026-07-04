@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import clsx from "clsx";
 import {
   Activity,
@@ -20,23 +20,55 @@ import {
   Play,
   Plus,
   QrCode,
+  Save,
   Search,
   Send,
   Settings,
   ShieldCheck,
   ShoppingBag,
   Tags,
+  Trash2,
+  Upload,
   UserRoundCheck,
   UsersRound,
   WandSparkles,
-  Workflow
+  Workflow,
+  X
 } from "lucide-react";
-import { api, emptyStats, getToken, setToken, type Conversation, type Lead, type Message, type StatMap } from "./lib/api";
+import {
+  api,
+  clearToken,
+  emptyStats,
+  getToken,
+  mediaUrl,
+  setToken,
+  type Automation,
+  type Campaign,
+  type Conversation,
+  type Lead,
+  type MediaAsset,
+  type Message,
+  type Purchase,
+  type StatMap,
+  type Template
+} from "./lib/api";
 import { StatCard } from "./components/StatCard";
 
+type IconType = typeof LayoutDashboard;
 type Section = "dashboard" | "inbox" | "leads" | "campaigns" | "automations" | "templates" | "media" | "purchases" | "settings";
+type TelegramStatus = { status: string; qrCodeDataUrl?: string | null; username?: string | null };
+type AiConfig = Record<string, unknown> & {
+  model?: string;
+  promptBase?: string;
+  temperature?: number;
+  maxTokens?: number;
+  tone?: string;
+  maxChars?: number;
+  globalEnabled?: boolean;
+  encryptedApiKey?: boolean;
+};
 
-const sections: { id: Section; label: string; icon: typeof LayoutDashboard }[] = [
+const sections: { id: Section; label: string; icon: IconType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "inbox", label: "Inbox", icon: Inbox },
   { id: "leads", label: "Leads", icon: UsersRound },
@@ -48,47 +80,251 @@ const sections: { id: Section; label: string; icon: typeof LayoutDashboard }[] =
   { id: "settings", label: "Ajustes", icon: Settings }
 ];
 
+const templateCategories = [
+  "BIENVENIDA",
+  "CONFIRMACION_EDAD",
+  "PRECIO",
+  "SEGUIMIENTO_24H",
+  "SEGUIMIENTO_48H",
+  "PROMO",
+  "CIERRE_SUAVE",
+  "POST_COMPRA",
+  "NO_INTERESADO",
+  "STOP"
+];
+
+const leadStatuses = [
+  "NUEVO",
+  "INTERESADO",
+  "CALIENTE",
+  "RESPONDIO",
+  "PENDIENTE_PAGO",
+  "COMPRO",
+  "NO_INTERESADO",
+  "NO_VOLVER_A_ESCRIBIR",
+  "BLOQUEADO",
+  "ERROR",
+  "REQUIERE_REVISION_MANUAL"
+];
+
+const automationTriggers = [
+  "NEW_MESSAGE_RECEIVED",
+  "LEAD_CREATED",
+  "LEAD_STATUS_CHANGED",
+  "AGE_CONFIRMED",
+  "PRICE_REQUESTED",
+  "PRICE_SENT_NO_REPLY",
+  "LEAD_IDLE_24H",
+  "LEAD_IDLE_48H",
+  "LEAD_STARTED_NO_PURCHASE",
+  "PURCHASE_REGISTERED",
+  "TAG_ADDED",
+  "CAMPAIGN_RECEIVED",
+  "STOP_REQUESTED"
+];
+
+const automationActions = [
+  "SEND_MESSAGE",
+  "SEND_IMAGE",
+  "SEND_MESSAGE_IMAGE",
+  "CHANGE_STATUS",
+  "ADD_TAG",
+  "REMOVE_TAG",
+  "CREATE_INTERNAL_TASK",
+  "NOTIFY_ADMIN",
+  "STOP_AI",
+  "STOP_AUTOMATIONS"
+];
+
+const campaignSegments = [
+  { value: "optin", label: "Leads con opt-in", segment: { optInCommercial: true } },
+  { value: "adult", label: "Opt-in + mayor de edad", segment: { optInCommercial: true, ageConfirmed: true } },
+  { value: "interested", label: "Interesados", segment: { optInCommercial: true, status: "INTERESADO" } },
+  { value: "hot", label: "Calientes", segment: { optInCommercial: true, status: "CALIENTE" } },
+  { value: "buyers", label: "Compradores", segment: { optInCommercial: true, status: "COMPRO" } }
+];
+
+const templateVariables = ["nombre", "username", "precio", "plan", "link_pago", "link_bot", "fecha", "fuente"];
+
+function messageFromError(error: unknown) {
+  return error instanceof Error ? error.message : "Error inesperado";
+}
+
+function formatMoney(value: number | string | undefined) {
+  const number = Number(value ?? 0);
+  return Number.isFinite(number) ? `$${number.toFixed(2)}` : "$0.00";
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
 export function App() {
-  const [tokenReady, setTokenReady] = useState(Boolean(getToken()));
+  const [authChecked, setAuthChecked] = useState(!getToken());
+  const [tokenReady, setTokenReady] = useState(false);
   const [section, setSection] = useState<Section>("dashboard");
   const [stats, setStats] = useState<StatMap>(emptyStats);
   const [leads, setLeads] = useState<Lead[]>([]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
+  const [campaigns, setCampaigns] = useState<Campaign[]>([]);
+  const [automations, setAutomations] = useState<Automation[]>([]);
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
+  const [purchases, setPurchases] = useState<Purchase[]>([]);
+  const [aiConfig, setAiConfig] = useState<AiConfig>({});
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
-  const [telegram, setTelegram] = useState<{ status: string; qrCodeDataUrl?: string | null; username?: string | null }>({ status: "DISCONNECTED" });
+  const [telegram, setTelegram] = useState<TelegramStatus>({ status: "DISCONNECTED" });
   const [composer, setComposer] = useState("");
   const [search, setSearch] = useState("");
   const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
-    if (!tokenReady) return;
+    let active = true;
+    const token = getToken();
+    if (!token) {
+      setAuthChecked(true);
+      return;
+    }
+
+    api.me()
+      .then(() => {
+        if (active) setTokenReady(true);
+      })
+      .catch(() => {
+        clearToken();
+        if (active) setTokenReady(false);
+      })
+      .finally(() => {
+        if (active) setAuthChecked(true);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  async function loadAll() {
     setLoadError("");
-    void Promise.all([
-      api.dashboard(),
-      api.leads(),
-      api.conversations(),
-      api.telegramStatus()
-    ]).then(([dashboardStats, leadItems, conversationItems, telegramStatus]) => {
+    try {
+      const [dashboardStats, leadItems, conversationItems, telegramStatus, campaignItems, automationItems, templateItems, mediaItems, purchaseItems, config] = await Promise.all([
+        api.dashboard(),
+        api.leads(),
+        api.conversations(),
+        api.telegramStatus(),
+        api.campaigns(),
+        api.automations(),
+        api.templates(),
+        api.media(),
+        api.purchases(),
+        api.aiConfig()
+      ]);
+
       setStats(dashboardStats);
       setLeads(leadItems);
       setConversations(conversationItems);
-      setSelectedConversation(conversationItems[0] ?? null);
+      setSelectedConversation((current) => {
+        if (!conversationItems.length) return null;
+        if (!current) return conversationItems[0];
+        return conversationItems.find((conversation) => conversation.id === current.id) ?? conversationItems[0];
+      });
       setTelegram(telegramStatus);
-    }).catch((error) => {
+      setCampaigns(campaignItems);
+      setAutomations(automationItems);
+      setTemplates(templateItems);
+      setMediaAssets(mediaItems);
+      setPurchases(purchaseItems);
+      setAiConfig(config);
+    } catch (error) {
+      const detail = messageFromError(error);
       setStats(emptyStats);
       setLeads([]);
       setConversations([]);
       setSelectedConversation(null);
       setMessages([]);
-      setLoadError(error instanceof Error ? error.message : "No se pudo conectar con la API");
+      setLoadError(detail);
+      if (detail.includes("401") || detail.includes("No autenticado") || detail.includes("Sesion invalida")) {
+        clearToken();
+        setTokenReady(false);
+      }
+    }
+  }
+
+  async function refreshLeadsAndConversations() {
+    const [dashboardStats, leadItems, conversationItems] = await Promise.all([api.dashboard(), api.leads(), api.conversations()]);
+    setStats(dashboardStats);
+    setLeads(leadItems);
+    setConversations(conversationItems);
+    setSelectedConversation((current) => {
+      if (!conversationItems.length) return null;
+      if (!current) return conversationItems[0];
+      return conversationItems.find((conversation) => conversation.id === current.id) ?? conversationItems[0];
     });
+  }
+
+  async function refreshCampaigns() {
+    setCampaigns(await api.campaigns());
+    setStats(await api.dashboard());
+  }
+
+  async function refreshAutomations() {
+    setAutomations(await api.automations());
+    setStats(await api.dashboard());
+  }
+
+  async function refreshTemplates() {
+    setTemplates(await api.templates());
+  }
+
+  async function refreshMedia() {
+    setMediaAssets(await api.media());
+  }
+
+  async function refreshPurchases() {
+    setPurchases(await api.purchases());
+    await refreshLeadsAndConversations();
+  }
+
+  async function pollTelegramStatus(times = 12) {
+    for (let index = 0; index < times; index += 1) {
+      await sleep(2500);
+      const status = await api.telegramStatus();
+      setTelegram(status);
+      if (status.status === "CONNECTED" || status.status === "ERROR" || status.status === "EXPIRED") return;
+    }
+  }
+
+  async function startTelegramQr() {
+    try {
+      setLoadError("");
+      const status = await api.startQr();
+      setTelegram(status);
+      void pollTelegramStatus();
+    } catch (error) {
+      setLoadError(messageFromError(error));
+    }
+  }
+
+  useEffect(() => {
+    if (!tokenReady) return;
+    void loadAll();
   }, [tokenReady]);
 
   useEffect(() => {
-    if (!selectedConversation?.id) return;
+    if (!selectedConversation?.id) {
+      setMessages([]);
+      return;
+    }
     void api.messages(selectedConversation.id).then(setMessages).catch(() => setMessages([]));
   }, [selectedConversation?.id]);
+
+  if (!authChecked) {
+    return (
+      <main className="grid min-h-screen place-items-center bg-panel px-4 text-sm text-zinc-600">
+        Verificando sesion...
+      </main>
+    );
+  }
 
   if (!tokenReady) return <Login onReady={() => setTokenReady(true)} />;
 
@@ -150,7 +386,7 @@ export function App() {
             </button>
             <button
               onClick={() => {
-                localStorage.removeItem("crm_token");
+                clearToken();
                 setTokenReady(false);
               }}
               className="icon-button"
@@ -163,11 +399,13 @@ export function App() {
 
         <div className="px-4 py-5 lg:px-7">
           {loadError && (
-            <div className="mb-4 rounded-lg border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral">
-              No se pudo cargar informacion real desde la API. Revisa `VITE_API_URL`, el token de sesion o la API. Detalle: {loadError}
+            <div className="mb-4 flex items-start justify-between gap-3 rounded-lg border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral">
+              <span>No se pudo cargar o guardar informacion real. Detalle: {loadError}</span>
+              <button onClick={() => setLoadError("")} title="Cerrar"><X size={16} /></button>
             </div>
           )}
-          {section === "dashboard" && <Dashboard stats={stats} telegram={telegram} onStartQr={async () => setTelegram(await api.startQr())} />}
+
+          {section === "dashboard" && <Dashboard stats={stats} leads={leads} telegram={telegram} onStartQr={startTelegramQr} />}
           {section === "inbox" && (
             <InboxView
               conversations={conversations}
@@ -178,19 +416,42 @@ export function App() {
               setComposer={setComposer}
               onSend={async () => {
                 if (!composer.trim() || !selectedConversation) return;
-                setMessages((items) => [...items, { id: crypto.randomUUID(), direction: "OUTBOUND", body: composer, createdAt: new Date().toISOString() }]);
-                await api.sendMessage(selectedConversation.id, composer).catch(() => undefined);
+                const text = composer.trim();
                 setComposer("");
+                try {
+                  await api.sendMessage(selectedConversation.id, text);
+                  setMessages(await api.messages(selectedConversation.id));
+                  await refreshLeadsAndConversations();
+                } catch (error) {
+                  setLoadError(messageFromError(error));
+                }
+              }}
+              onUpdateLead={async (leadId, payload) => {
+                await api.updateLead(leadId, payload);
+                await refreshLeadsAndConversations();
               }}
             />
           )}
-          {section === "leads" && <LeadsView leads={leads} search={search} setSearch={setSearch} />}
-          {section === "campaigns" && <CampaignsView />}
-          {section === "automations" && <AutomationsView />}
-          {section === "templates" && <TemplatesView />}
-          {section === "media" && <MediaView />}
-          {section === "purchases" && <PurchasesView leads={leads} />}
-          {section === "settings" && <SettingsView telegram={telegram} setTelegram={setTelegram} />}
+          {section === "leads" && <LeadsView leads={leads} search={search} setSearch={setSearch} onUpdateLead={async (id, payload) => {
+            await api.updateLead(id, payload);
+            await refreshLeadsAndConversations();
+          }} />}
+          {section === "campaigns" && <CampaignsView campaigns={campaigns} mediaAssets={mediaAssets} onReload={refreshCampaigns} onError={setLoadError} />}
+          {section === "automations" && <AutomationsView automations={automations} mediaAssets={mediaAssets} onReload={refreshAutomations} onError={setLoadError} />}
+          {section === "templates" && <TemplatesView templates={templates} mediaAssets={mediaAssets} onReload={refreshTemplates} onError={setLoadError} />}
+          {section === "media" && <MediaView mediaAssets={mediaAssets} onReload={refreshMedia} onError={setLoadError} />}
+          {section === "purchases" && <PurchasesView leads={leads} purchases={purchases} onReload={refreshPurchases} onError={setLoadError} />}
+          {section === "settings" && (
+            <SettingsView
+              telegram={telegram}
+              setTelegram={setTelegram}
+              aiConfig={aiConfig}
+              onStartQr={startTelegramQr}
+              onReloadAi={async () => setAiConfig(await api.aiConfig())}
+              onReloadAll={loadAll}
+              onError={setLoadError}
+            />
+          )}
         </div>
       </main>
     </div>
@@ -198,15 +459,15 @@ export function App() {
 }
 
 function Login({ onReady }: { onReady: () => void }) {
-  const [email, setEmail] = useState("owner@example.com");
-  const [password, setPassword] = useState("ChangeMe123!");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
   const [error, setError] = useState("");
 
-  async function submit(event: React.FormEvent) {
+  async function submit(event: FormEvent) {
     event.preventDefault();
     setError("");
     try {
-      const result = await api.login(email, password);
+      const result = await api.login(email.trim(), password);
       setToken(result.token);
       onReady();
     } catch (loginError) {
@@ -223,14 +484,14 @@ function Login({ onReady }: { onReady: () => void }) {
           </span>
           <div>
             <h1 className="text-lg font-semibold">Ingreso privado</h1>
-            <p className="text-xs text-zinc-500">Owner / Admin / Vendedor / Soporte</p>
+            <p className="text-xs text-zinc-500">Solo usuarios configurados en el servidor</p>
           </div>
         </div>
         <label className="field-label">Email</label>
-        <input className="field" value={email} onChange={(event) => setEmail(event.target.value)} type="email" />
+        <input className="field" value={email} onChange={(event) => setEmail(event.target.value)} type="email" required autoComplete="email" />
         <label className="field-label mt-3">Contrasena</label>
-        <input className="field" value={password} onChange={(event) => setPassword(event.target.value)} type="password" />
-        {error && <p className="mt-3 text-sm text-coral">{error}</p>}
+        <input className="field" value={password} onChange={(event) => setPassword(event.target.value)} type="password" required minLength={8} autoComplete="current-password" />
+        {error && <p className="mt-3 rounded-md bg-coral/10 px-3 py-2 text-sm text-coral">{error}</p>}
         <button className="mt-5 flex h-10 w-full items-center justify-center gap-2 rounded-md bg-pine text-sm font-semibold text-white">
           <KeyRound size={17} />
           Entrar
@@ -240,7 +501,14 @@ function Login({ onReady }: { onReady: () => void }) {
   );
 }
 
-function Dashboard({ stats, telegram, onStartQr }: { stats: StatMap; telegram: { status: string; qrCodeDataUrl?: string | null }; onStartQr: () => Promise<void> }) {
+function Dashboard({ stats, leads, telegram, onStartQr }: { stats: StatMap; leads: Lead[]; telegram: TelegramStatus; onStartQr: () => Promise<void> }) {
+  const countsByStatus = useMemo(() => {
+    return leads.reduce<Record<string, number>>((acc, lead) => {
+      acc[lead.status] = (acc[lead.status] ?? 0) + 1;
+      return acc;
+    }, {});
+  }, [leads]);
+
   const statCards = [
     ["Total leads", stats.totalLeads, UsersRound, "pine"],
     ["Nuevos hoy", stats.newToday, UserRoundCheck, "amber"],
@@ -263,23 +531,27 @@ function Dashboard({ stats, telegram, onStartQr }: { stats: StatMap; telegram: {
       <div className="grid gap-4 xl:grid-cols-[1.1fr_0.9fr]">
         <section className="rounded-lg border border-line bg-white p-4 shadow-soft">
           <div className="flex items-center justify-between">
-            <h2 className="text-sm font-semibold">Embudo comercial</h2>
+            <h2 className="text-sm font-semibold">Embudo comercial real</h2>
             <Activity size={18} className="text-pine" />
           </div>
-          <div className="mt-4 grid gap-3 md:grid-cols-4">
-            {["Nuevo", "Interesado", "Caliente", "Compro"].map((label, index) => (
-              <div key={label} className="rounded-lg border border-line p-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium">{label}</span>
-                  <ChevronRight size={16} className="text-zinc-400" />
+          {leads.length === 0 ? (
+            <p className="mt-4 rounded-md bg-panel px-3 py-3 text-sm text-zinc-500">Todavia no hay leads reales sincronizados desde Telegram.</p>
+          ) : (
+            <div className="mt-4 grid gap-3 md:grid-cols-4">
+              {Object.entries(countsByStatus).map(([status, count]) => (
+                <div key={status} className="rounded-lg border border-line p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate text-sm font-medium">{status}</span>
+                    <ChevronRight size={16} className="text-zinc-400" />
+                  </div>
+                  <div className="mt-4 h-2 rounded-full bg-zinc-100">
+                    <div className="h-2 rounded-full bg-pine" style={{ width: `${Math.max(8, Math.min(100, (count / leads.length) * 100))}%` }} />
+                  </div>
+                  <p className="mt-2 text-xs text-zinc-500">{count} leads</p>
                 </div>
-                <div className="mt-4 h-2 rounded-full bg-zinc-100">
-                  <div className="h-2 rounded-full bg-pine" style={{ width: `${78 - index * 14}%` }} />
-                </div>
-                <p className="mt-2 text-xs text-zinc-500">{Math.max(8, 42 - index * 9)} leads</p>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="rounded-lg border border-line bg-white p-4 shadow-soft">
@@ -292,19 +564,14 @@ function Dashboard({ stats, telegram, onStartQr }: { stats: StatMap; telegram: {
               {telegram.qrCodeDataUrl ? <img src={telegram.qrCodeDataUrl} alt="QR Telegram" className="h-28 w-28" /> : <QrCode size={42} className="text-zinc-400" />}
             </div>
             <div className="min-w-0 flex-1">
-              <span className={clsx("rounded-md px-2 py-1 text-xs font-semibold", telegram.status === "CONNECTED" ? "bg-pine/10 text-pine" : "bg-amber/10 text-amber")}>
-                {telegram.status}
-              </span>
-              <div className="mt-4 flex gap-2">
-                <button onClick={onStartQr} className="button-primary">
-                  <QrCode size={17} />
-                  Conectar
-                </button>
-                <button className="button-secondary">
-                  <Pause size={17} />
-                  Pausar IA
-                </button>
-              </div>
+              <StatusBadge status={telegram.status} />
+              <p className="mt-3 text-sm text-zinc-500">
+                {telegram.status === "CONNECTED" ? `Cuenta conectada ${telegram.username ? `@${telegram.username}` : ""}` : "Genera el QR y escanealo desde Telegram movil."}
+              </p>
+              <button onClick={onStartQr} className="button-primary mt-4">
+                <QrCode size={17} />
+                Generar QR
+              </button>
             </div>
           </div>
         </section>
@@ -321,7 +588,15 @@ function InboxView(props: {
   composer: string;
   setComposer: (value: string) => void;
   onSend: () => void;
+  onUpdateLead: (leadId: string, payload: Record<string, unknown>) => Promise<void>;
 }) {
+  const lead = props.selected?.lead ?? null;
+  const [noteDraft, setNoteDraft] = useState("");
+
+  useEffect(() => {
+    setNoteDraft(lead?.notes ?? "");
+  }, [lead?.id, lead?.notes]);
+
   return (
     <div className="grid h-[calc(100vh-116px)] min-h-[640px] gap-4 xl:grid-cols-[330px_1fr_340px]">
       <section className="overflow-hidden rounded-lg border border-line bg-white shadow-soft">
@@ -341,13 +616,13 @@ function InboxView(props: {
               onClick={() => props.onSelect(conversation)}
               className={clsx("flex w-full gap-3 border-b border-line p-3 text-left hover:bg-panel", props.selected?.id === conversation.id && "bg-panel")}
             >
-              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-ink text-sm font-semibold text-white">{conversation.name.slice(0, 1)}</span>
+              <span className="grid h-10 w-10 shrink-0 place-items-center rounded-md bg-ink text-sm font-semibold text-white">{(conversation.name || "?").slice(0, 1)}</span>
               <span className="min-w-0 flex-1">
                 <span className="flex items-center justify-between gap-2">
                   <span className="truncate text-sm font-semibold">{conversation.name}</span>
                   {conversation.unreadCount > 0 && <span className="rounded-full bg-coral px-2 py-0.5 text-xs text-white">{conversation.unreadCount}</span>}
                 </span>
-                <span className="mt-1 block truncate text-xs text-zinc-500">{conversation.lastMessage}</span>
+                <span className="mt-1 block truncate text-xs text-zinc-500">{conversation.lastMessage || "Sin mensajes guardados"}</span>
               </span>
             </button>
           ))}
@@ -359,22 +634,25 @@ function InboxView(props: {
           <div className="flex h-14 items-center justify-between border-b border-line px-4">
             <div>
               <h2 className="text-sm font-semibold">{props.selected?.name ?? "Selecciona una conversacion"}</h2>
-              <p className="text-xs text-zinc-500">{props.selected?.lead?.status ?? "Sin lead"}</p>
+              <p className="text-xs text-zinc-500">{lead?.status ?? "Sin lead"}</p>
             </div>
-            <div className="flex gap-2">
-              <button className="icon-button" title="IA">
+            {lead && (
+              <button
+                className="button-secondary"
+                onClick={() => props.onUpdateLead(lead.id, { aiEnabled: !lead.aiEnabled })}
+                title="Activar o pausar IA para este lead"
+              >
                 <Bot size={17} />
+                {lead.aiEnabled === false ? "Activar IA" : "Pausar IA"}
               </button>
-              <button className="icon-button" title="Etiquetas">
-                <Tags size={17} />
-              </button>
-            </div>
+            )}
           </div>
           <div className="flex-1 overflow-y-auto bg-[#f6f7f4] p-4">
             <div className="mx-auto flex max-w-3xl flex-col gap-3">
+              {props.messages.length === 0 && <p className="rounded-md bg-white px-3 py-2 text-sm text-zinc-500 shadow-sm">No hay mensajes guardados para esta conversacion.</p>}
               {props.messages.map((message) => (
                 <div key={message.id} className={clsx("max-w-[78%] rounded-lg px-3 py-2 text-sm shadow-sm", message.direction === "OUTBOUND" ? "ml-auto bg-pine text-white" : "bg-white text-ink")}>
-                  <p>{message.body}</p>
+                  <p>{message.body || "[imagen]"}</p>
                   <div className={clsx("mt-1 flex items-center gap-1 text-[11px]", message.direction === "OUTBOUND" ? "text-white/70" : "text-zinc-400")}>
                     {message.aiGenerated && <WandSparkles size={12} />}
                     {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -385,16 +663,14 @@ function InboxView(props: {
           </div>
           <div className="border-t border-line bg-white p-3">
             <div className="flex items-end gap-2">
-              <button className="icon-button" title="Imagen">
-                <Image size={18} />
-              </button>
               <textarea
                 value={props.composer}
                 onChange={(event) => props.setComposer(event.target.value)}
                 className="max-h-28 min-h-10 flex-1 resize-none rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine"
                 placeholder="Mensaje"
+                disabled={!props.selected}
               />
-              <button onClick={props.onSend} className="grid h-10 w-10 place-items-center rounded-md bg-pine text-white" title="Enviar">
+              <button onClick={props.onSend} className="grid h-10 w-10 place-items-center rounded-md bg-pine text-white disabled:opacity-50" title="Enviar" disabled={!props.selected || !props.composer.trim()}>
                 <Send size={18} />
               </button>
             </div>
@@ -404,33 +680,45 @@ function InboxView(props: {
 
       <section className="overflow-y-auto rounded-lg border border-line bg-white p-4 shadow-soft">
         <h2 className="text-sm font-semibold">Lead</h2>
-        <div className="mt-4 space-y-3">
-          <LeadFlag label="Opt-in comercial" active={Boolean(props.selected?.lead?.optInCommercial)} />
-          <LeadFlag label="Mayor de edad" active={Boolean(props.selected?.lead?.ageConfirmed)} />
-          <LeadFlag label="Seguimiento" active={Boolean(props.selected?.lead?.followUpAllowed)} />
-          <LeadFlag label="IA activa" active={props.selected?.lead?.status !== "NO_VOLVER_A_ESCRIBIR"} />
-        </div>
-        <div className="mt-5 grid grid-cols-2 gap-2">
-          <button className="button-secondary">
-            <Check size={16} />
-            Compro
-          </button>
-          <button className="button-secondary">
-            <ArchiveX size={16} />
-            Stop
-          </button>
-        </div>
-        <div className="mt-5">
-          <label className="field-label">Notas internas</label>
-          <textarea className="min-h-28 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" defaultValue="Pidio precio. Pendiente confirmar plan." />
-        </div>
-        <div className="mt-5">
-          <h3 className="text-xs font-semibold uppercase text-zinc-500">Proximas automatizaciones</h3>
-          <div className="mt-2 space-y-2">
-            <QueueItem title="Seguimiento 24h" time="Manana 10:00" />
-            <QueueItem title="Confirmacion de edad" time="Pendiente" />
-          </div>
-        </div>
+        {!lead ? (
+          <p className="mt-4 rounded-md bg-panel px-3 py-3 text-sm text-zinc-500">Selecciona una conversacion con lead asociado.</p>
+        ) : (
+          <>
+            <div className="mt-4 space-y-3">
+              <LeadFlag label="Opt-in comercial" active={lead.optInCommercial} />
+              <LeadFlag label="Mayor de edad" active={lead.ageConfirmed} />
+              <LeadFlag label="Seguimiento" active={lead.followUpAllowed} />
+              <LeadFlag label="IA activa" active={lead.aiEnabled !== false} />
+            </div>
+            <div className="mt-5 grid grid-cols-2 gap-2">
+              <button className="button-secondary" onClick={() => props.onUpdateLead(lead.id, { status: "COMPRO" })}>
+                <Check size={16} />
+                Compro
+              </button>
+              <button className="button-secondary" onClick={() => props.onUpdateLead(lead.id, { status: "NO_VOLVER_A_ESCRIBIR", followUpAllowed: false, optInCommercial: false, aiEnabled: false })}>
+                <ArchiveX size={16} />
+                Stop
+              </button>
+            </div>
+            <label className="field-label mt-5">Estado</label>
+            <select className="field" value={lead.status} onChange={(event) => props.onUpdateLead(lead.id, { status: event.target.value })}>
+              {leadStatuses.map((status) => <option key={status}>{status}</option>)}
+            </select>
+            <div className="mt-3 grid grid-cols-1 gap-2">
+              <ToggleRow label="Opt-in comercial" checked={lead.optInCommercial} onChange={(value) => props.onUpdateLead(lead.id, { optInCommercial: value })} />
+              <ToggleRow label="Mayor de edad confirmado" checked={lead.ageConfirmed} onChange={(value) => props.onUpdateLead(lead.id, { ageConfirmed: value })} />
+              <ToggleRow label="Permite seguimiento" checked={lead.followUpAllowed} onChange={(value) => props.onUpdateLead(lead.id, { followUpAllowed: value })} />
+            </div>
+            <div className="mt-5">
+              <label className="field-label">Notas internas</label>
+              <textarea className="min-h-28 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" value={noteDraft} onChange={(event) => setNoteDraft(event.target.value)} />
+              <button className="button-secondary mt-2" onClick={() => props.onUpdateLead(lead.id, { notes: noteDraft })}>
+                <Save size={16} />
+                Guardar notas
+              </button>
+            </div>
+          </>
+        )}
       </section>
     </div>
   );
@@ -445,18 +733,18 @@ function LeadFlag({ label, active }: { label: string; active: boolean }) {
   );
 }
 
-function QueueItem({ title, time }: { title: string; time: string }) {
+function ToggleRow({ label, checked, onChange }: { label: string; checked: boolean; onChange: (value: boolean) => void }) {
   return (
-    <div className="flex items-center justify-between rounded-md bg-panel px-3 py-2">
-      <span className="text-sm">{title}</span>
-      <span className="text-xs text-zinc-500">{time}</span>
-    </div>
+    <label className="flex items-center justify-between rounded-md border border-line px-3 py-2 text-sm">
+      <span>{label}</span>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+    </label>
   );
 }
 
-function LeadsView({ leads, search, setSearch }: { leads: Lead[]; search: string; setSearch: (value: string) => void }) {
+function LeadsView({ leads, search, setSearch, onUpdateLead }: { leads: Lead[]; search: string; setSearch: (value: string) => void; onUpdateLead: (id: string, payload: Record<string, unknown>) => Promise<void> }) {
   const filtered = useMemo(
-    () => leads.filter((lead) => `${lead.name} ${lead.username} ${lead.status}`.toLowerCase().includes(search.toLowerCase())),
+    () => leads.filter((lead) => `${lead.name} ${lead.username ?? ""} ${lead.status}`.toLowerCase().includes(search.toLowerCase())),
     [leads, search]
   );
 
@@ -467,13 +755,10 @@ function LeadsView({ leads, search, setSearch }: { leads: Lead[]; search: string
           <Search size={16} className="text-zinc-400" />
           <input className="w-full bg-transparent text-sm outline-none" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar lead" />
         </div>
-        <button className="button-primary">
-          <Plus size={17} />
-          Lead
-        </button>
+        <p className="text-sm text-zinc-500">{filtered.length} leads reales</p>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[860px] text-left text-sm">
+        <table className="w-full min-w-[980px] text-left text-sm">
           <thead className="bg-panel text-xs uppercase text-zinc-500">
             <tr>
               <th className="px-4 py-3">Nombre</th>
@@ -482,30 +767,40 @@ function LeadsView({ leads, search, setSearch }: { leads: Lead[]; search: string
               <th className="px-4 py-3">Etiquetas</th>
               <th className="px-4 py-3">Ultimo mensaje</th>
               <th className="px-4 py-3">Total</th>
+              <th className="px-4 py-3">Acciones</th>
             </tr>
           </thead>
           <tbody>
+            {filtered.length === 0 && (
+              <tr><td className="px-4 py-5 text-zinc-500" colSpan={7}>No hay leads reales para mostrar.</td></tr>
+            )}
             {filtered.map((lead) => (
               <tr key={lead.id} className="border-t border-line">
                 <td className="px-4 py-3">
                   <p className="font-medium">{lead.name}</p>
-                  <p className="text-xs text-zinc-500">@{lead.username}</p>
+                  <p className="text-xs text-zinc-500">{lead.username ? `@${lead.username}` : "sin username"}</p>
                 </td>
                 <td className="px-4 py-3"><StatusBadge status={lead.status} /></td>
                 <td className="px-4 py-3">
-                  <div className="flex gap-1">
+                  <div className="flex flex-wrap gap-1">
                     {lead.optInCommercial && <MiniBadge label="Opt-in" />}
                     {lead.ageConfirmed && <MiniBadge label="Edad" />}
                     {lead.followUpAllowed && <MiniBadge label="Follow" />}
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <div className="flex gap-1">
+                  <div className="flex flex-wrap gap-1">
                     {lead.tags.map(({ tag }) => <MiniBadge key={tag.name} label={tag.name} color={tag.color} />)}
                   </div>
                 </td>
-                <td className="max-w-sm truncate px-4 py-3 text-zinc-600">{lead.lastInboundMessage}</td>
-                <td className="px-4 py-3">${lead.totalSpent}</td>
+                <td className="max-w-sm truncate px-4 py-3 text-zinc-600">{lead.lastInboundMessage || "-"}</td>
+                <td className="px-4 py-3">{formatMoney(lead.totalSpent)}</td>
+                <td className="px-4 py-3">
+                  <div className="flex flex-wrap gap-2">
+                    <button className="button-secondary" onClick={() => onUpdateLead(lead.id, { status: "CALIENTE" })}>Caliente</button>
+                    <button className="button-secondary" onClick={() => onUpdateLead(lead.id, { status: "NO_VOLVER_A_ESCRIBIR", followUpAllowed: false, optInCommercial: false, aiEnabled: false })}>Stop</button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -515,107 +810,140 @@ function LeadsView({ leads, search, setSearch }: { leads: Lead[]; search: string
   );
 }
 
-function CampaignsView() {
-  return (
-    <TwoColumn title="Campanas opt-in" icon={Send} action="Nueva campana">
-      <BuilderPanel
-        rows={[
-          ["Segmento", "Leads con opt-in + exclusiones obligatorias"],
-          ["Limite diario", "50 mensajes"],
-          ["Pausa", "90 segundos"],
-          ["Vista previa", "88 destinatarios elegibles"]
-        ]}
-      />
-      <ListPanel
-        items={[
-          ["Precio julio", "ACTIVA", "Opt-in, edad confirmada"],
-          ["Post compra", "PROGRAMADA", "Compradores"],
-          ["Reactivacion suave", "BORRADOR", "Interesados sin compra"]
-        ]}
-      />
-    </TwoColumn>
-  );
-}
+function CampaignsView({ campaigns, mediaAssets, onReload, onError }: { campaigns: Campaign[]; mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const [form, setForm] = useState({
+    name: "",
+    description: "",
+    segment: "optin",
+    message: "",
+    imageId: "",
+    link: "",
+    sendTime: "10:00",
+    dailyLimit: "50",
+    pauseSeconds: "90",
+    sensitive: false
+  });
+  const [preview, setPreview] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
 
-function AutomationsView() {
-  return (
-    <TwoColumn title="Automatizaciones" icon={Workflow} action="Crear regla">
-      <BuilderPanel
-        rows={[
-          ["Trigger", "Lead recibio precio y no respondio"],
-          ["Delay", "24 horas"],
-          ["Accion", "Enviar mensaje"],
-          ["Seguridad", "Stop, edad y seguimiento"]
-        ]}
-      />
-      <ListPanel
-        items={[
-          ["Seguimiento 24h", "ACTIVA", "1 ejecucion por lead"],
-          ["Seguimiento 48h", "ACTIVA", "No compradores"],
-          ["Stop handler", "ACTIVA", "Detiene IA y colas"]
-        ]}
-      />
-    </TwoColumn>
-  );
-}
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setSaving(true);
+    try {
+      const segment = campaignSegments.find((item) => item.value === form.segment)?.segment ?? { optInCommercial: true };
+      await api.createCampaign({
+        name: form.name.trim(),
+        description: form.description.trim() || undefined,
+        segment,
+        message: form.message,
+        imageId: form.imageId || undefined,
+        link: form.link.trim(),
+        sendTime: form.sendTime,
+        dailyLimit: Number(form.dailyLimit),
+        pauseSeconds: Number(form.pauseSeconds),
+        sensitive: form.sensitive
+      });
+      setForm((current) => ({ ...current, name: "", description: "", message: "", imageId: "", link: "" }));
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    } finally {
+      setSaving(false);
+    }
+  }
 
-function TemplatesView() {
-  const templates = [
-    ["Confirmacion de edad", "Hola :) antes de pasarte la info, me confirmas que eres mayor de edad?"],
-    ["Seguimiento 24h", "Hola :) te escribo solo para saber si todavia querias la info."],
-    ["Precio", "Te paso las opciones disponibles."],
-    ["Stop", "Listo, no te volvere a escribir por este tema."]
-  ];
+  async function runAction(action: () => Promise<unknown>) {
+    try {
+      await action();
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
   return (
-    <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
-      <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
-        <button className="button-primary">
+    <section className="grid gap-4 xl:grid-cols-[430px_1fr]">
+      <form onSubmit={submit} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+        <div className="flex items-center gap-3">
+          <span className="grid h-9 w-9 place-items-center rounded-md bg-pine/10 text-pine"><Send size={18} /></span>
+          <h2 className="text-sm font-semibold">Nueva campana permitida</h2>
+        </div>
+        <label className="field-label mt-4">Nombre</label>
+        <input className="field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+        <label className="field-label mt-3">Descripcion</label>
+        <input className="field" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
+        <label className="field-label mt-3">Segmento</label>
+        <select className="field" value={form.segment} onChange={(event) => setForm({ ...form, segment: event.target.value })}>
+          {campaignSegments.map((segment) => <option key={segment.value} value={segment.value}>{segment.label}</option>)}
+        </select>
+        <label className="field-label mt-3">Mensaje</label>
+        <textarea className="min-h-32 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} required />
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <label>
+            <span className="field-label">Imagen opcional</span>
+            <select className="field" value={form.imageId} onChange={(event) => setForm({ ...form, imageId: event.target.value })}>
+              <option value="">Sin imagen</option>
+              {mediaAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.originalName}</option>)}
+            </select>
+          </label>
+          <label>
+            <span className="field-label">Hora</span>
+            <input className="field" type="time" value={form.sendTime} onChange={(event) => setForm({ ...form, sendTime: event.target.value })} />
+          </label>
+          <label>
+            <span className="field-label">Limite diario</span>
+            <input className="field" type="number" min={1} max={500} value={form.dailyLimit} onChange={(event) => setForm({ ...form, dailyLimit: event.target.value })} />
+          </label>
+          <label>
+            <span className="field-label">Pausa segundos</span>
+            <input className="field" type="number" min={30} max={3600} value={form.pauseSeconds} onChange={(event) => setForm({ ...form, pauseSeconds: event.target.value })} />
+          </label>
+        </div>
+        <label className="field-label mt-3">Link opcional</label>
+        <input className="field" value={form.link} onChange={(event) => setForm({ ...form, link: event.target.value })} placeholder="https://..." />
+        <label className="mt-3 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm">
+          <input type="checkbox" checked={form.sensitive} onChange={(event) => setForm({ ...form, sensitive: event.target.checked })} />
+          Requiere mayoria de edad confirmada
+        </label>
+        <button className="button-primary mt-4" disabled={saving}>
           <Plus size={17} />
-          Plantilla
+          Crear campana
         </button>
-        <div className="mt-4 space-y-2">
-          {templates.map(([name, text]) => (
-            <button key={name} className="w-full rounded-md border border-line p-3 text-left hover:bg-panel">
-              <p className="text-sm font-semibold">{name}</p>
-              <p className="mt-1 truncate text-xs text-zinc-500">{text}</p>
-            </button>
-          ))}
-        </div>
-      </div>
-      <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
-        <label className="field-label">Texto</label>
-        <textarea className="mt-2 min-h-64 w-full rounded-md border border-line p-3 text-sm outline-none focus:border-pine" defaultValue={templates[0][1]} />
-        <div className="mt-4 flex flex-wrap gap-2">
-          {["{{nombre}}", "{{username}}", "{{precio}}", "{{plan}}", "{{link_pago}}", "{{fecha}}"].map((variable) => <MiniBadge key={variable} label={variable} />)}
-        </div>
-      </div>
-    </section>
-  );
-}
+      </form>
 
-function MediaView() {
-  return (
-    <section className="space-y-4">
-      <div className="rounded-lg border border-dashed border-line bg-white p-8 text-center shadow-soft">
-        <Image className="mx-auto text-pine" size={34} />
-        <div className="mt-4 flex justify-center gap-2">
-          <button className="button-primary">
-            <Plus size={17} />
-            Subir imagen
-          </button>
-          <button className="button-secondary">
-            <ArchiveX size={17} />
-            Quitar
-          </button>
-        </div>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        {[1, 2, 3, 4].map((item) => (
-          <div key={item} className="overflow-hidden rounded-lg border border-line bg-white shadow-soft">
-            <div className="aspect-[4/3] bg-gradient-to-br from-zinc-100 via-emerald-50 to-amber-50" />
-            <div className="p-3">
-              <p className="text-sm font-medium">media-{item}.webp</p>
-              <p className="text-xs text-zinc-500">Usada en campana y plantilla</p>
+      <div className="space-y-2">
+        {campaigns.length === 0 && <EmptyState text="No hay campanas reales creadas." />}
+        {campaigns.map((campaign) => (
+          <div key={campaign.id} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">{campaign.name}</p>
+                <p className="mt-1 text-xs text-zinc-500">{campaign.description || "Sin descripcion"} · {campaign._count?.recipients ?? 0} destinatarios preparados</p>
+              </div>
+              <StatusBadge status={campaign.status} />
+            </div>
+            <p className="mt-3 whitespace-pre-wrap rounded-md bg-panel px-3 py-2 text-sm text-zinc-700">{campaign.message}</p>
+            {preview[campaign.id] && <p className="mt-2 text-sm text-pine">{preview[campaign.id]}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button className="button-secondary" onClick={() => runAction(async () => {
+                const result = await api.previewCampaign(campaign.id);
+                setPreview((current) => ({ ...current, [campaign.id]: `${result.count} leads elegibles para esta campana.` }));
+              })}>
+                <Search size={16} />
+                Vista previa
+              </button>
+              <button className="button-secondary" onClick={() => runAction(() => api.activateCampaign(campaign.id))}>
+                <Play size={16} />
+                Activar
+              </button>
+              <button className="button-secondary" onClick={() => runAction(() => api.pauseCampaign(campaign.id))}>
+                <Pause size={16} />
+                Pausar
+              </button>
+              <button className="button-secondary" onClick={() => window.confirm("Eliminar campana?") && runAction(() => api.deleteCampaign(campaign.id))}>
+                <Trash2 size={16} />
+                Eliminar
+              </button>
             </div>
           </div>
         ))}
@@ -624,132 +952,548 @@ function MediaView() {
   );
 }
 
-function PurchasesView({ leads }: { leads: Lead[] }) {
+function AutomationsView({ automations, mediaAssets, onReload, onError }: { automations: Automation[]; mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const [form, setForm] = useState({
+    name: "",
+    trigger: "NEW_MESSAGE_RECEIVED",
+    delaySeconds: "0",
+    action: "SEND_MESSAGE",
+    text: "",
+    status: "INTERESADO",
+    tag: "",
+    imageId: "",
+    executionLimit: "1",
+    sensitive: false,
+    allowRepeat: false
+  });
+
+  function actionPayload() {
+    if (form.action === "CHANGE_STATUS") return { status: form.status };
+    if (form.action === "ADD_TAG" || form.action === "REMOVE_TAG") return { tag: form.tag };
+    if (form.action === "SEND_IMAGE") return { mediaAssetId: form.imageId };
+    if (form.action === "SEND_MESSAGE_IMAGE") return { text: form.text, mediaAssetId: form.imageId };
+    return { text: form.text };
+  }
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.createAutomation({
+        name: form.name.trim(),
+        trigger: form.trigger,
+        conditions: {},
+        delaySeconds: Number(form.delaySeconds),
+        action: form.action,
+        actionPayload: actionPayload(),
+        executionLimit: Number(form.executionLimit),
+        segment: {},
+        priority: 0,
+        sensitive: form.sensitive,
+        allowRepeat: form.allowRepeat
+      });
+      setForm((current) => ({ ...current, name: "", text: "", tag: "", imageId: "" }));
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  async function runAction(action: () => Promise<unknown>) {
+    try {
+      await action();
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
   return (
-    <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
-      <form className="rounded-lg border border-line bg-white p-4 shadow-soft">
-        <label className="field-label">Lead</label>
-        <select className="field">
-          {leads.map((lead) => <option key={lead.id}>{lead.name}</option>)}
+    <section className="grid gap-4 xl:grid-cols-[430px_1fr]">
+      <form onSubmit={submit} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+        <div className="flex items-center gap-3">
+          <span className="grid h-9 w-9 place-items-center rounded-md bg-pine/10 text-pine"><Workflow size={18} /></span>
+          <h2 className="text-sm font-semibold">Crear regla</h2>
+        </div>
+        <label className="field-label mt-4">Nombre</label>
+        <input className="field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+        <label className="field-label mt-3">Trigger</label>
+        <select className="field" value={form.trigger} onChange={(event) => setForm({ ...form, trigger: event.target.value })}>
+          {automationTriggers.map((trigger) => <option key={trigger}>{trigger}</option>)}
         </select>
-        <label className="field-label mt-3">Monto</label>
-        <input className="field" type="number" defaultValue={49} />
-        <label className="field-label mt-3">Plan</label>
-        <input className="field" defaultValue="Mensual" />
-        <label className="field-label mt-3">Metodo</label>
-        <input className="field" defaultValue="Transferencia" />
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          <label>
+            <span className="field-label">Delay segundos</span>
+            <input className="field" type="number" min={0} value={form.delaySeconds} onChange={(event) => setForm({ ...form, delaySeconds: event.target.value })} />
+          </label>
+          <label>
+            <span className="field-label">Limite ejecucion</span>
+            <input className="field" type="number" min={1} value={form.executionLimit} onChange={(event) => setForm({ ...form, executionLimit: event.target.value })} />
+          </label>
+        </div>
+        <label className="field-label mt-3">Accion</label>
+        <select className="field" value={form.action} onChange={(event) => setForm({ ...form, action: event.target.value })}>
+          {automationActions.map((action) => <option key={action}>{action}</option>)}
+        </select>
+        {(form.action === "SEND_MESSAGE" || form.action === "SEND_MESSAGE_IMAGE") && (
+          <>
+            <label className="field-label mt-3">Mensaje</label>
+            <textarea className="min-h-28 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} />
+          </>
+        )}
+        {(form.action === "SEND_IMAGE" || form.action === "SEND_MESSAGE_IMAGE") && (
+          <>
+            <label className="field-label mt-3">Imagen</label>
+            <select className="field" value={form.imageId} onChange={(event) => setForm({ ...form, imageId: event.target.value })}>
+              <option value="">Selecciona imagen</option>
+              {mediaAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.originalName}</option>)}
+            </select>
+          </>
+        )}
+        {form.action === "CHANGE_STATUS" && (
+          <>
+            <label className="field-label mt-3">Nuevo estado</label>
+            <select className="field" value={form.status} onChange={(event) => setForm({ ...form, status: event.target.value })}>
+              {leadStatuses.map((status) => <option key={status}>{status}</option>)}
+            </select>
+          </>
+        )}
+        {(form.action === "ADD_TAG" || form.action === "REMOVE_TAG") && (
+          <>
+            <label className="field-label mt-3">Etiqueta</label>
+            <input className="field" value={form.tag} onChange={(event) => setForm({ ...form, tag: event.target.value })} />
+          </>
+        )}
+        <div className="mt-3 grid gap-2">
+          <label className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm">
+            <input type="checkbox" checked={form.sensitive} onChange={(event) => setForm({ ...form, sensitive: event.target.checked })} />
+            Requiere mayoria de edad si el mensaje es sensible
+          </label>
+          <label className="flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm">
+            <input type="checkbox" checked={form.allowRepeat} onChange={(event) => setForm({ ...form, allowRepeat: event.target.checked })} />
+            Permitir repetir en el mismo lead
+          </label>
+        </div>
         <button className="button-primary mt-4">
-          <CircleDollarSign size={17} />
-          Registrar
+          <Plus size={17} />
+          Crear regla
         </button>
       </form>
-      <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
-        <ListPanel
-          items={[
-            ["Valeria S.", "CONFIRMADO", "$120 - VIP"],
-            ["Leo M.", "PENDIENTE", "$49 - Mensual"],
-            ["Ana P.", "CONFIRMADO", "$79 - Trimestral"]
-          ]}
-        />
+
+      <div className="space-y-2">
+        {automations.length === 0 && <EmptyState text="No hay automatizaciones reales creadas." />}
+        {automations.map((automation) => (
+          <div key={automation.id} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">{automation.name}</p>
+                <p className="mt-1 text-xs text-zinc-500">{automation.trigger} · delay {automation.delaySeconds}s · {automation.action}</p>
+              </div>
+              <StatusBadge status={automation.status} />
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button className="button-secondary" onClick={() => runAction(() => api.updateAutomation(automation.id, { status: automation.status === "ACTIVE" ? "INACTIVE" : "ACTIVE" }))}>
+                {automation.status === "ACTIVE" ? <Pause size={16} /> : <Play size={16} />}
+                {automation.status === "ACTIVE" ? "Pausar" : "Activar"}
+              </button>
+              <button className="button-secondary" onClick={() => window.confirm("Eliminar automatizacion?") && runAction(() => api.deleteAutomation(automation.id))}>
+                <Trash2 size={16} />
+                Eliminar
+              </button>
+            </div>
+          </div>
+        ))}
       </div>
     </section>
   );
 }
 
-function SettingsView({ telegram, setTelegram }: { telegram: { status: string; qrCodeDataUrl?: string | null }; setTelegram: (value: { status: string; qrCodeDataUrl?: string | null }) => void }) {
+function TemplatesView({ templates, mediaAssets, onReload, onError }: { templates: Template[]; mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [form, setForm] = useState({ name: "", category: "BIENVENIDA", text: "", imageId: "", active: true });
+
+  useEffect(() => {
+    const selected = templates.find((template) => template.id === selectedId);
+    if (selected) {
+      setForm({
+        name: selected.name,
+        category: selected.category,
+        text: selected.text,
+        imageId: selected.imageId ?? "",
+        active: selected.active
+      });
+    } else if (!selectedId) {
+      setForm({ name: "", category: "BIENVENIDA", text: "", imageId: "", active: true });
+    }
+  }, [selectedId, templates]);
+
+  async function save(event: FormEvent) {
+    event.preventDefault();
+    try {
+      const payload = { ...form, imageId: form.imageId || null, variables: templateVariables.filter((variable) => form.text.includes(`{{${variable}}}`)) };
+      if (selectedId) await api.updateTemplate(selectedId, payload);
+      else await api.createTemplate(payload);
+      setSelectedId(null);
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  async function remove() {
+    if (!selectedId || !window.confirm("Eliminar plantilla?")) return;
+    try {
+      await api.deleteTemplate(selectedId);
+      setSelectedId(null);
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  return (
+    <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
+        <button className="button-primary" onClick={() => setSelectedId(null)}>
+          <Plus size={17} />
+          Nueva plantilla
+        </button>
+        <div className="mt-4 space-y-2">
+          {templates.length === 0 && <p className="rounded-md bg-panel px-3 py-3 text-sm text-zinc-500">No hay plantillas guardadas.</p>}
+          {templates.map((template) => (
+            <button key={template.id} onClick={() => setSelectedId(template.id)} className={clsx("w-full rounded-md border border-line p-3 text-left hover:bg-panel", selectedId === template.id && "bg-panel")}>
+              <p className="text-sm font-semibold">{template.name}</p>
+              <p className="mt-1 truncate text-xs text-zinc-500">{template.text}</p>
+            </button>
+          ))}
+        </div>
+      </div>
+      <form onSubmit={save} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+        <div className="grid gap-3 md:grid-cols-2">
+          <label>
+            <span className="field-label">Nombre</span>
+            <input className="field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+          </label>
+          <label>
+            <span className="field-label">Categoria</span>
+            <select className="field" value={form.category} onChange={(event) => setForm({ ...form, category: event.target.value })}>
+              {templateCategories.map((category) => <option key={category}>{category}</option>)}
+            </select>
+          </label>
+        </div>
+        <label className="field-label mt-3">Texto</label>
+        <textarea className="mt-2 min-h-64 w-full rounded-md border border-line p-3 text-sm outline-none focus:border-pine" value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} required />
+        <label className="field-label mt-3">Imagen opcional</label>
+        <select className="field" value={form.imageId} onChange={(event) => setForm({ ...form, imageId: event.target.value })}>
+          <option value="">Sin imagen</option>
+          {mediaAssets.map((asset) => <option key={asset.id} value={asset.id}>{asset.originalName}</option>)}
+        </select>
+        <label className="mt-3 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm">
+          <input type="checkbox" checked={form.active} onChange={(event) => setForm({ ...form, active: event.target.checked })} />
+          Plantilla activa
+        </label>
+        <div className="mt-4 flex flex-wrap gap-2">
+          {templateVariables.map((variable) => (
+            <button key={variable} type="button" className="rounded-md bg-panel px-2 py-1 text-xs font-medium text-zinc-600" onClick={() => setForm({ ...form, text: `${form.text} {{${variable}}}` })}>
+              {`{{${variable}}}`}
+            </button>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button className="button-primary">
+            <Save size={17} />
+            {selectedId ? "Guardar cambios" : "Crear plantilla"}
+          </button>
+          {selectedId && (
+            <button type="button" className="button-secondary" onClick={remove}>
+              <Trash2 size={17} />
+              Eliminar
+            </button>
+          )}
+        </div>
+      </form>
+    </section>
+  );
+}
+
+function MediaView({ mediaAssets, onReload, onError }: { mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const [uploading, setUploading] = useState(false);
+
+  async function upload(file: File | undefined) {
+    if (!file) return;
+    setUploading(true);
+    try {
+      await api.uploadMedia(file);
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  async function remove(id: string) {
+    if (!window.confirm("Eliminar imagen?")) return;
+    try {
+      await api.deleteMedia(id);
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  return (
+    <section className="space-y-4">
+      <div className="rounded-lg border border-dashed border-line bg-white p-8 text-center shadow-soft">
+        <Image className="mx-auto text-pine" size={34} />
+        <p className="mt-3 text-sm text-zinc-500">Formatos permitidos: jpg, jpeg, png y webp.</p>
+        <label className="button-primary mt-4 inline-flex cursor-pointer">
+          <Upload size={17} />
+          {uploading ? "Subiendo..." : "Subir imagen"}
+          <input className="hidden" type="file" accept="image/jpeg,image/png,image/webp" disabled={uploading} onChange={(event) => void upload(event.target.files?.[0])} />
+        </label>
+      </div>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        {mediaAssets.length === 0 && <EmptyState text="No hay imagenes subidas." />}
+        {mediaAssets.map((asset) => (
+          <div key={asset.id} className="overflow-hidden rounded-lg border border-line bg-white shadow-soft">
+            <div className="aspect-[4/3] bg-panel">
+              <img src={mediaUrl(asset.url)} alt={asset.originalName} className="h-full w-full object-cover" />
+            </div>
+            <div className="p-3">
+              <p className="truncate text-sm font-medium">{asset.originalName}</p>
+              <p className="text-xs text-zinc-500">{Math.round(asset.sizeBytes / 1024)} KB · {new Date(asset.createdAt).toLocaleDateString()}</p>
+              <button className="button-secondary mt-3" onClick={() => remove(asset.id)}>
+                <Trash2 size={16} />
+                Eliminar
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PurchasesView({ leads, purchases, onReload, onError }: { leads: Lead[]; purchases: Purchase[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const [form, setForm] = useState({ leadId: "", amount: "", paymentMethod: "", plan: "", notes: "" });
+
+  useEffect(() => {
+    if (!form.leadId && leads[0]) setForm((current) => ({ ...current, leadId: leads[0].id }));
+  }, [form.leadId, leads]);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.createPurchase({
+        leadId: form.leadId,
+        amount: Number(form.amount),
+        paymentMethod: form.paymentMethod,
+        plan: form.plan,
+        notes: form.notes || undefined
+      });
+      setForm((current) => ({ ...current, amount: "", paymentMethod: "", plan: "", notes: "" }));
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  async function update(id: string, status: string) {
+    try {
+      await api.updatePurchase(id, status);
+      await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  return (
+    <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
+      <form onSubmit={submit} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+        <label className="field-label">Lead</label>
+        <select className="field" value={form.leadId} onChange={(event) => setForm({ ...form, leadId: event.target.value })} required>
+          {leads.map((lead) => <option key={lead.id} value={lead.id}>{lead.name}</option>)}
+        </select>
+        <label className="field-label mt-3">Monto</label>
+        <input className="field" type="number" min={0} step="0.01" value={form.amount} onChange={(event) => setForm({ ...form, amount: event.target.value })} required />
+        <label className="field-label mt-3">Plan</label>
+        <input className="field" value={form.plan} onChange={(event) => setForm({ ...form, plan: event.target.value })} required />
+        <label className="field-label mt-3">Metodo</label>
+        <input className="field" value={form.paymentMethod} onChange={(event) => setForm({ ...form, paymentMethod: event.target.value })} required />
+        <label className="field-label mt-3">Notas</label>
+        <textarea className="min-h-24 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" value={form.notes} onChange={(event) => setForm({ ...form, notes: event.target.value })} />
+        <button className="button-primary mt-4" disabled={!leads.length}>
+          <CircleDollarSign size={17} />
+          Registrar
+        </button>
+      </form>
+      <div className="space-y-2">
+        {purchases.length === 0 && <EmptyState text="No hay compras registradas." />}
+        {purchases.map((purchase) => (
+          <div key={purchase.id} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <p className="text-sm font-semibold">{purchase.lead?.name ?? "Lead"} · {formatMoney(purchase.amount)}</p>
+                <p className="mt-1 text-xs text-zinc-500">{purchase.plan} · {purchase.paymentMethod} · {new Date(purchase.createdAt).toLocaleDateString()}</p>
+              </div>
+              <StatusBadge status={purchase.status} />
+            </div>
+            {purchase.notes && <p className="mt-3 rounded-md bg-panel px-3 py-2 text-sm text-zinc-600">{purchase.notes}</p>}
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button className="button-secondary" onClick={() => update(purchase.id, "CONFIRMADO")}>
+                <Check size={16} />
+                Confirmar
+              </button>
+              <button className="button-secondary" onClick={() => update(purchase.id, "RECHAZADO")}>
+                <ArchiveX size={16} />
+                Rechazar
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function SettingsView(props: {
+  telegram: TelegramStatus;
+  setTelegram: (value: TelegramStatus) => void;
+  aiConfig: AiConfig;
+  onStartQr: () => Promise<void>;
+  onReloadAi: () => Promise<void>;
+  onReloadAll: () => Promise<void>;
+  onError: (message: string) => void;
+}) {
+  const [aiForm, setAiForm] = useState({
+    model: "gpt-4.1-mini",
+    apiKey: "",
+    promptBase: "",
+    temperature: "0.4",
+    maxTokens: "400",
+    maxChars: "700",
+    tone: "calido, breve y natural",
+    globalEnabled: false
+  });
+
+  useEffect(() => {
+    setAiForm({
+      model: String(props.aiConfig.model ?? "gpt-4.1-mini"),
+      apiKey: "",
+      promptBase: String(props.aiConfig.promptBase ?? ""),
+      temperature: String(props.aiConfig.temperature ?? 0.4),
+      maxTokens: String(props.aiConfig.maxTokens ?? 400),
+      maxChars: String(props.aiConfig.maxChars ?? 700),
+      tone: String(props.aiConfig.tone ?? "calido, breve y natural"),
+      globalEnabled: Boolean(props.aiConfig.globalEnabled)
+    });
+  }, [props.aiConfig]);
+
+  async function saveAi(event: FormEvent) {
+    event.preventDefault();
+    try {
+      await api.updateAiConfig({
+        model: aiForm.model,
+        apiKey: aiForm.apiKey || undefined,
+        promptBase: aiForm.promptBase,
+        temperature: Number(aiForm.temperature),
+        maxTokens: Number(aiForm.maxTokens),
+        maxChars: Number(aiForm.maxChars),
+        tone: aiForm.tone,
+        globalEnabled: aiForm.globalEnabled
+      });
+      await props.onReloadAi();
+    } catch (error) {
+      props.onError(messageFromError(error));
+    }
+  }
+
+  async function syncTelegram() {
+    try {
+      await api.syncTelegram(100);
+      await props.onReloadAll();
+    } catch (error) {
+      props.onError(messageFromError(error));
+    }
+  }
+
+  async function logoutTelegram() {
+    try {
+      await api.logoutTelegram();
+      props.setTelegram(await api.telegramStatus());
+    } catch (error) {
+      props.onError(messageFromError(error));
+    }
+  }
+
   return (
     <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
       <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
         <h2 className="text-sm font-semibold">Telegram</h2>
         <div className="mt-4 grid h-44 place-items-center rounded-lg border border-dashed border-line bg-panel">
-          {telegram.qrCodeDataUrl ? <img src={telegram.qrCodeDataUrl} alt="QR Telegram" className="h-40 w-40" /> : <QrCode size={48} className="text-zinc-400" />}
+          {props.telegram.qrCodeDataUrl ? <img src={props.telegram.qrCodeDataUrl} alt="QR Telegram" className="h-40 w-40" /> : <QrCode size={48} className="text-zinc-400" />}
         </div>
-        <button onClick={async () => setTelegram(await api.startQr())} className="button-primary mt-4 w-full justify-center">
+        <div className="mt-3 flex items-center justify-between">
+          <StatusBadge status={props.telegram.status} />
+          <span className="text-xs text-zinc-500">{props.telegram.username ? `@${props.telegram.username}` : "sin usuario conectado"}</span>
+        </div>
+        <button onClick={props.onStartQr} className="button-primary mt-4 w-full justify-center">
           <QrCode size={17} />
           Generar QR
         </button>
+        <button onClick={syncTelegram} className="button-secondary mt-2 w-full justify-center">
+          <Inbox size={17} />
+          Sincronizar chats
+        </button>
+        <button onClick={logoutTelegram} className="button-secondary mt-2 w-full justify-center">
+          <LogOut size={17} />
+          Cerrar Telegram
+        </button>
       </div>
-      <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
+
+      <form onSubmit={saveAi} className="rounded-lg border border-line bg-white p-4 shadow-soft">
         <div className="grid gap-4 md:grid-cols-2">
-          <SettingField label="Modelo IA" value="gpt-4.1-mini" icon={Bot} />
-          <SettingField label="Temperatura" value="0.4" icon={WandSparkles} />
-          <SettingField label="Horario" value="09:00 - 20:00" icon={CalendarClock} />
-          <SettingField label="Link de pago" value="https://example.com/pay" icon={CircleDollarSign} />
+          <SettingInput label="Modelo IA" icon={Bot} value={aiForm.model} onChange={(value) => setAiForm({ ...aiForm, model: value })} />
+          <SettingInput label="Temperatura" icon={WandSparkles} value={aiForm.temperature} onChange={(value) => setAiForm({ ...aiForm, temperature: value })} type="number" />
+          <SettingInput label="Max tokens" icon={CalendarClock} value={aiForm.maxTokens} onChange={(value) => setAiForm({ ...aiForm, maxTokens: value })} type="number" />
+          <SettingInput label="Max caracteres" icon={MessageSquareText} value={aiForm.maxChars} onChange={(value) => setAiForm({ ...aiForm, maxChars: value })} type="number" />
+          <SettingInput label="Tono" icon={WandSparkles} value={aiForm.tone} onChange={(value) => setAiForm({ ...aiForm, tone: value })} />
+          <SettingInput label={props.aiConfig.encryptedApiKey ? "Nueva API key OpenAI" : "API key OpenAI"} icon={KeyRound} value={aiForm.apiKey} onChange={(value) => setAiForm({ ...aiForm, apiKey: value })} type="password" />
         </div>
+        <label className="mt-4 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm">
+          <input type="checkbox" checked={aiForm.globalEnabled} onChange={(event) => setAiForm({ ...aiForm, globalEnabled: event.target.checked })} />
+          IA global activa
+        </label>
         <label className="field-label mt-4">Prompt base</label>
-        <textarea className="mt-2 min-h-40 w-full rounded-md border border-line p-3 text-sm outline-none focus:border-pine" defaultValue="Eres un asistente de ventas por Telegram. Responde breve, calido y natural. Respeta stop, opt-in y mayoria de edad." />
-      </div>
+        <textarea className="mt-2 min-h-40 w-full rounded-md border border-line p-3 text-sm outline-none focus:border-pine" value={aiForm.promptBase} onChange={(event) => setAiForm({ ...aiForm, promptBase: event.target.value })} />
+        <button className="button-primary mt-4">
+          <Save size={17} />
+          Guardar ajustes IA
+        </button>
+      </form>
     </section>
   );
 }
 
-function SettingField({ label, value, icon: Icon }: { label: string; value: string; icon: typeof Bot }) {
+function SettingInput({ label, value, onChange, icon: Icon, type = "text" }: { label: string; value: string; onChange: (value: string) => void; icon: IconType; type?: string }) {
   return (
     <label className="block">
       <span className="field-label flex items-center gap-2"><Icon size={15} />{label}</span>
-      <input className="field mt-2" defaultValue={value} />
+      <input className="field mt-2" value={value} onChange={(event) => onChange(event.target.value)} type={type} />
     </label>
   );
 }
 
-function TwoColumn({ title, icon: Icon, action, children }: { title: string; icon: typeof Send; action: string; children: React.ReactNode }) {
-  const content = Array.isArray(children) ? children : [children];
-  return (
-    <section className="space-y-4">
-      <div className="flex items-center justify-between rounded-lg border border-line bg-white p-4 shadow-soft">
-        <div className="flex items-center gap-3">
-          <span className="grid h-9 w-9 place-items-center rounded-md bg-pine/10 text-pine"><Icon size={18} /></span>
-          <h2 className="text-sm font-semibold">{title}</h2>
-        </div>
-        <button className="button-primary">
-          <Plus size={17} />
-          {action}
-        </button>
-      </div>
-      <div className="grid gap-4 xl:grid-cols-[420px_1fr]">
-        {content}
-      </div>
-    </section>
-  );
-}
-
-function BuilderPanel({ rows }: { rows: [string, string][] }) {
-  return (
-    <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
-      <div className="space-y-3">
-        {rows.map(([label, value]) => (
-          <div key={label}>
-            <label className="field-label">{label}</label>
-            <div className="mt-1 rounded-md border border-line px-3 py-2 text-sm">{value}</div>
-          </div>
-        ))}
-      </div>
-      <div className="mt-4 flex gap-2">
-        <button className="button-primary"><Play size={17} />Activar</button>
-        <button className="button-secondary"><Pause size={17} />Pausar</button>
-      </div>
-    </div>
-  );
-}
-
-function ListPanel({ items }: { items: [string, string, string][] }) {
-  return (
-    <div className="space-y-2">
-      {items.map(([title, status, detail]) => (
-        <div key={title} className="flex items-center justify-between gap-3 rounded-lg border border-line bg-white p-4 shadow-soft">
-          <div>
-            <p className="text-sm font-semibold">{title}</p>
-            <p className="mt-1 text-xs text-zinc-500">{detail}</p>
-          </div>
-          <StatusBadge status={status} />
-        </div>
-      ))}
-    </div>
-  );
+function EmptyState({ text }: { text: string }) {
+  return <div className="rounded-lg border border-line bg-white p-4 text-sm text-zinc-500 shadow-soft">{text}</div>;
 }
 
 function StatusBadge({ status }: { status: string }) {
-  const tone = status.includes("NO_") || status === "FAILED" || status === "ERROR" ? "bg-coral/10 text-coral" : status.includes("ACT") || status === "COMPRO" || status === "CONFIRMADO" ? "bg-pine/10 text-pine" : "bg-amber/10 text-amber";
+  const tone = status.includes("NO_") || status === "FAILED" || status === "ERROR" || status === "RECHAZADO" || status === "EXPIRED"
+    ? "bg-coral/10 text-coral"
+    : status.includes("ACT") || status === "COMPRO" || status === "CONFIRMADO" || status === "CONNECTED"
+      ? "bg-pine/10 text-pine"
+      : "bg-amber/10 text-amber";
   return <span className={`inline-flex rounded-md px-2 py-1 text-xs font-semibold ${tone}`}>{status}</span>;
 }
 

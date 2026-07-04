@@ -6,15 +6,26 @@ import { DEFAULT_AI_PROMPT, INITIAL_TEMPLATES } from "@crm/shared";
 const prisma = new PrismaClient();
 
 async function main() {
-  const email = process.env.ADMIN_BOOTSTRAP_EMAIL ?? "owner@example.com";
-  const password = process.env.ADMIN_BOOTSTRAP_PASSWORD ?? "ChangeMe123!";
+  const email = process.env.ADMIN_BOOTSTRAP_EMAIL;
+  const password = process.env.ADMIN_BOOTSTRAP_PASSWORD;
+
+  if (process.env.NODE_ENV === "production" && (!email || !password)) {
+    throw new Error("ADMIN_BOOTSTRAP_EMAIL y ADMIN_BOOTSTRAP_PASSWORD son obligatorios en produccion");
+  }
+
+  const bootstrapEmail = email ?? "owner@example.com";
+  const bootstrapPassword = password ?? "ChangeMe123!";
+
+  if (process.env.NODE_ENV === "production" && bootstrapEmail !== "owner@example.com") {
+    await prisma.adminUser.deleteMany({ where: { email: "owner@example.com" } });
+  }
 
   await prisma.adminUser.upsert({
-    where: { email },
+    where: { email: bootstrapEmail },
     update: {},
     create: {
-      email,
-      passwordHash: await bcrypt.hash(password, 12),
+      email: bootstrapEmail,
+      passwordHash: await bcrypt.hash(bootstrapPassword, 12),
       role: "OWNER"
     }
   });

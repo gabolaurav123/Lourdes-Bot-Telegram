@@ -39,3 +39,12 @@ templatesRouter.patch(
     res.json(template);
   })
 );
+
+templatesRouter.delete(
+  "/:id",
+  asyncHandler(async (req, res) => {
+    await prisma.template.delete({ where: { id: req.params.id } });
+    await auditLog(req, "TEMPLATE_DELETED", { entityType: "Template", entityId: req.params.id });
+    res.json({ ok: true });
+  })
+);

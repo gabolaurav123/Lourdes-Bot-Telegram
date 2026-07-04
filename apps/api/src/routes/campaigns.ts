@@ -49,6 +49,23 @@ campaignsRouter.get(
   })
 );
 
+campaignsRouter.patch(
+  "/:id",
+  requireRole("OWNER", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    const data = {
+      ...req.body,
+      segment: req.body.segment === undefined ? undefined : toInputJson(req.body.segment),
+      exclusions: req.body.exclusions === undefined ? undefined : toInputJson(req.body.exclusions),
+      allowedHours: req.body.allowedHours === undefined ? undefined : toInputJson(req.body.allowedHours),
+      startAt: req.body.startAt ? new Date(req.body.startAt) : req.body.startAt
+    };
+    const campaign = await prisma.campaign.update({ where: { id: req.params.id }, data });
+    await auditLog(req, "CAMPAIGN_UPDATED", { entityType: "Campaign", entityId: req.params.id });
+    res.json(campaign);
+  })
+);
+
 campaignsRouter.post(
   "/:id/activate",
   requireRole("OWNER", "ADMIN"),
@@ -66,5 +83,15 @@ campaignsRouter.post(
     const campaign = await campaignService.pause(req.params.id);
     await auditLog(req, "CAMPAIGN_PAUSED", { entityType: "Campaign", entityId: req.params.id });
     res.json(campaign);
+  })
+);
+
+campaignsRouter.delete(
+  "/:id",
+  requireRole("OWNER", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    await prisma.campaign.delete({ where: { id: req.params.id } });
+    await auditLog(req, "CAMPAIGN_DELETED", { entityType: "Campaign", entityId: req.params.id });
+    res.json({ ok: true });
   })
 );

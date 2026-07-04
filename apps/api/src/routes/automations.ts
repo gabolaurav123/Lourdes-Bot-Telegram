@@ -46,9 +46,26 @@ automationsRouter.patch(
   "/:id",
   requireRole("OWNER", "ADMIN"),
   asyncHandler(async (req, res) => {
-    const automation = await prisma.automation.update({ where: { id: req.params.id }, data: req.body });
+    const data = {
+      ...req.body,
+      conditions: req.body.conditions === undefined ? undefined : toInputJson(req.body.conditions),
+      actionPayload: req.body.actionPayload === undefined ? undefined : toInputJson(req.body.actionPayload),
+      segment: req.body.segment === undefined ? undefined : toInputJson(req.body.segment),
+      allowedHours: req.body.allowedHours === undefined ? undefined : toInputJson(req.body.allowedHours)
+    };
+    const automation = await prisma.automation.update({ where: { id: req.params.id }, data });
     await auditLog(req, "AUTOMATION_UPDATED", { entityType: "Automation", entityId: req.params.id });
     res.json(automation);
+  })
+);
+
+automationsRouter.delete(
+  "/:id",
+  requireRole("OWNER", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    await prisma.automation.delete({ where: { id: req.params.id } });
+    await auditLog(req, "AUTOMATION_DELETED", { entityType: "Automation", entityId: req.params.id });
+    res.json({ ok: true });
   })
 );
 
