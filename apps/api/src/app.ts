@@ -4,9 +4,7 @@ import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { config } from "./config";
 import { errorHandler } from "./middleware/error";
 import { requireAuth } from "./middleware/auth";
@@ -22,8 +20,6 @@ import { mediaRouter } from "./routes/media";
 import { purchasesRouter } from "./routes/purchases";
 import { settingsRouter } from "./routes/settings";
 import { aiRouter } from "./routes/ai";
-
-const webDistDir = fileURLToPath(new URL("../../../apps/web/dist/", import.meta.url));
 
 export function createApp() {
   const app = express();
@@ -59,17 +55,6 @@ export function createApp() {
   app.use("/api/purchases", purchasesRouter);
   app.use("/api/settings", settingsRouter);
   app.use("/api/ai", aiRouter);
-
-  if (fs.existsSync(path.join(webDistDir, "index.html"))) {
-    app.use(express.static(webDistDir));
-    app.get("*", (req, res, next) => {
-      if (req.path.startsWith("/api") || req.path.startsWith("/uploads")) {
-        next();
-        return;
-      }
-      res.sendFile(path.join(webDistDir, "index.html"));
-    });
-  }
 
   app.use(errorHandler);
   return app;

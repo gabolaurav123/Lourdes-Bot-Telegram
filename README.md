@@ -2,6 +2,207 @@
 
 CRM web para operar una cuenta personal de Telegram como inbox comercial con consentimiento, trazabilidad y controles de seguridad. Incluye React + Vite + TailwindCSS, API Node/Express, Prisma/PostgreSQL, BullMQ/Redis, worker, GramJS, OpenAI y almacenamiento local/S3-compatible para imagenes.
 
+## Como se despliega
+
+No necesitas tres repositorios. Usa **un solo repositorio de GitHub**:
+
+```txt
+gabolaurav123/Lourdes-Bot-Telegram
+```
+
+En Seenode creas **tres servicios desde ese mismo repo**:
+
+```txt
+1. Web       Panel del CRM que abre en el navegador
+2. API       Backend, login, Telegram, IA, base de datos
+3. Worker    Campanas, automatizaciones y colas
+```
+
+Tambien necesitas:
+
+```txt
+4. PostgreSQL  Base de datos
+5. Redis       Cola de trabajos
+```
+
+PostgreSQL y Redis pueden estar en Seenode si te lo ofrece, o en servicios externos como Neon/Supabase para PostgreSQL y Upstash para Redis.
+
+## Seenode paso a paso
+
+En los tres servicios, deja `Root Directory` **vacio**. Aunque el proyecto es monorepo, los comandos con `-w` indican que parte ejecutar.
+
+### 1. Crear el servicio API
+
+Tipo:
+
+```txt
+Web Service
+```
+
+Config:
+
+```txt
+Repository: gabolaurav123/Lourdes-Bot-Telegram
+Branch: main
+Root Directory: vacio
+Port: 4000
+```
+
+Build Command:
+
+```bash
+npm ci --include=dev && npm run db:generate && npm run build -w @crm/api
+```
+
+Start Command:
+
+```bash
+npm run db:deploy && npm run db:seed && npm run start -w @crm/api
+```
+
+### 2. Crear el servicio Web
+
+Tipo:
+
+```txt
+Web Service
+```
+
+Config:
+
+```txt
+Repository: gabolaurav123/Lourdes-Bot-Telegram
+Branch: main
+Root Directory: vacio
+Port: 5173
+```
+
+Build Command:
+
+```bash
+npm ci --include=dev && npm run build -w @crm/web
+```
+
+Start Command:
+
+```bash
+npm run preview -w @crm/web -- --host 0.0.0.0 --port 5173
+```
+
+Variable especial del Web:
+
+```env
+VITE_API_URL=https://TU-API.seenode.app
+```
+
+### 3. Crear el servicio Worker
+
+Tipo:
+
+```txt
+Worker Service
+```
+
+Config:
+
+```txt
+Repository: gabolaurav123/Lourdes-Bot-Telegram
+Branch: main
+Root Directory: vacio
+```
+
+Build Command:
+
+```bash
+npm ci --include=dev && npm run db:generate && npm run build -w @crm/worker
+```
+
+Start Command:
+
+```bash
+npm run start -w @crm/worker
+```
+
+## Variables de entorno
+
+### API
+
+```env
+NODE_ENV=production
+API_PORT=4000
+APP_URL=https://TU-WEB.seenode.app
+API_URL=https://TU-API.seenode.app
+
+DATABASE_URL=postgresql://USUARIO:PASSWORD@HOST:PUERTO/DB?schema=public
+REDIS_URL=redis://default:PASSWORD@HOST:PUERTO
+
+JWT_SECRET=clave-larga-random-de-minimo-32-caracteres
+ENCRYPTION_KEY=clave-base64-de-32-bytes
+
+ADMIN_BOOTSTRAP_EMAIL=tu-email
+ADMIN_BOOTSTRAP_PASSWORD=tu-password-seguro
+
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=tu_api_hash
+TELEGRAM_SESSION_LABEL=primary
+
+OPENAI_API_KEY=tu_openai_key
+OPENAI_MODEL=gpt-4.1-mini
+
+MEDIA_STORAGE=local
+MEDIA_LOCAL_DIR=storage/media
+MEDIA_MAX_MB=8
+
+DEFAULT_TIMEZONE=America/La_Paz
+GLOBAL_AI_ENABLED=false
+GLOBAL_CAMPAIGNS_ENABLED=true
+PAYMENT_LINK=https://tu-link-de-pago
+```
+
+### Web
+
+```env
+VITE_API_URL=https://TU-API.seenode.app
+```
+
+### Worker
+
+```env
+NODE_ENV=production
+DATABASE_URL=postgresql://USUARIO:PASSWORD@HOST:PUERTO/DB?schema=public
+REDIS_URL=redis://default:PASSWORD@HOST:PUERTO
+ENCRYPTION_KEY=la-misma-del-api
+TELEGRAM_API_ID=123456
+TELEGRAM_API_HASH=tu_api_hash
+TELEGRAM_SESSION_LABEL=primary
+MEDIA_LOCAL_DIR=storage/media
+```
+
+## Donde conseguir Telegram API ID y API HASH
+
+1. Entra a [https://my.telegram.org](https://my.telegram.org).
+2. Inicia sesion con tu numero de Telegram.
+3. Telegram te enviara un codigo a tu app de Telegram.
+4. Entra a `API development tools`.
+5. Crea una app.
+6. Copia:
+
+```txt
+api_id      -> TELEGRAM_API_ID
+api_hash    -> TELEGRAM_API_HASH
+```
+
+Eso no conecta tu cuenta todavia. Solo autoriza a tu sistema a usar MTProto. Despues, desde la web del CRM, vas a `Ajustes > Telegram > Generar QR` y escaneas el QR con Telegram movil.
+
+## Como conectar Telegram
+
+1. Abre la URL del servicio Web.
+2. Inicia sesion con el admin seed.
+3. Ve a `Ajustes`.
+4. Pulsa `Generar QR`.
+5. Escanea con Telegram movil.
+6. La sesion queda guardada cifrada en backend.
+
 ## Alcance permitido
 
 - Lee y organiza conversaciones entrantes.
@@ -22,13 +223,6 @@ worker            BullMQ para campanas, automatizaciones y seguimientos
 storage/media     Imagenes locales en desarrollo
 ```
 
-## Requisitos
-
-- Node.js 22+
-- Docker y Docker Compose
-- Cuenta de desarrollador Telegram en `my.telegram.org` para `TELEGRAM_API_ID` y `TELEGRAM_API_HASH`
-- OpenAI API key si se activara IA
-
 ## Inicio local
 
 ```bash
@@ -41,61 +235,14 @@ npm run db:seed
 npm run dev
 ```
 
-URLs:
+URLs locales:
 
-- Web: `http://localhost:5173`
-- API: `http://localhost:4000`
-- Prisma Studio: `npm run db:studio`
-
-Credenciales seed:
-
-- Email: valor de `ADMIN_BOOTSTRAP_EMAIL`
-- Password: valor de `ADMIN_BOOTSTRAP_PASSWORD`
-
-## Variables criticas
-
-```env
-DATABASE_URL=postgresql://crm:crm_password@localhost:5432/telegram_crm?schema=public
-REDIS_URL=redis://localhost:6379
-JWT_SECRET=replace-with-at-least-32-random-characters
-ENCRYPTION_KEY=replace-with-32-byte-base64-key
-TELEGRAM_API_ID=123456
-TELEGRAM_API_HASH=your_telegram_api_hash
-OPENAI_API_KEY=
+```txt
+Web: http://localhost:5173
+API: http://localhost:4000
 ```
 
-Genera una key de cifrado:
-
-```bash
-node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
-```
-
-## Conexion Telegram por QR
-
-1. Completa `TELEGRAM_API_ID` y `TELEGRAM_API_HASH`.
-2. Inicia API, worker y web.
-3. Entra a `Ajustes > Telegram`.
-4. Pulsa `Generar QR`.
-5. Escanea el QR desde Telegram movil.
-
-La sesion MTProto se guarda cifrada con AES-256-GCM. El frontend solo recibe estado y QR temporal, nunca la sesion ni claves. Si la cuenta tiene 2FA, define temporalmente `TELEGRAM_2FA_PASSWORD` para completar el flujo.
-
-## Modulos API
-
-- `POST /api/auth/login`
-- `GET /api/dashboard`
-- `GET/POST /api/telegram/status|qr/start|sync|logout`
-- `GET/PATCH /api/leads`
-- `GET/POST /api/conversations/:id/messages`
-- `GET/POST /api/campaigns`, `POST /api/campaigns/:id/activate`
-- `GET/POST/PATCH /api/automations`
-- `GET/POST/PATCH /api/templates`
-- `GET/POST/DELETE /api/media`
-- `GET/POST /api/purchases`
-- `GET/PUT /api/settings`
-- `GET/PUT /api/ai/config`
-
-## Reglas de seguridad comercial
+## Seguridad comercial
 
 La funcion compartida `canMessageLead` bloquea envios cuando:
 
@@ -107,124 +254,7 @@ La funcion compartida `canMessageLead` bloquea envios cuando:
 
 El worker vuelve a validar estas reglas al ejecutar jobs pendientes.
 
-## Campanas
-
-Las campanas:
-
-- Preparan destinatarios elegibles antes de activar.
-- Exigen opt-in.
-- Aplican exclusiones obligatorias.
-- Guardan progreso en `CampaignRecipient`.
-- Respetan limite diario y pausa entre envios.
-- Permiten pausar/reanudar desde estado.
-
-## Automatizaciones
-
-Triggers soportados por convencion:
-
-- `NEW_MESSAGE_RECEIVED`
-- `LEAD_CREATED`
-- `LEAD_STATUS_CHANGED`
-- `AGE_CONFIRMED`
-- `PRICE_REQUESTED`
-- `PRICE_SENT_NO_REPLY`
-- `LEAD_IDLE_24H`
-- `LEAD_IDLE_48H`
-- `PURCHASE_REGISTERED`
-- `TAG_ADDED`
-- `CAMPAIGN_RECEIVED`
-- `STOP_REQUESTED`
-
-Acciones soportadas:
-
-- `SEND_MESSAGE`
-- `SEND_IMAGE`
-- `SEND_MESSAGE_IMAGE`
-- `CHANGE_STATUS`
-- `ADD_TAG`
-- `STOP_AI`
-- `STOP_AUTOMATIONS`
-
-## Deploy Seenode en un solo servicio
-
-Para reducir costo, puedes desplegar todo en un unico Web Service. Ese servicio:
-
-- Sirve la web React desde `apps/web/dist`.
-- Expone la API en `/api`.
-- Corre el worker BullMQ en paralelo dentro del mismo runtime.
-
-Configura en Seenode:
-
-- Type: `Web Service`
-- Repository: `gabolaurav123/Lourdes-Bot-Telegram`
-- Branch: `main`
-- Root Directory: vacio
-- Port: `4000`
-
-Build Command:
-
-```bash
-npm ci --include=dev && npm run build:single
-```
-
-Start Command:
-
-```bash
-npm run db:deploy && npm run db:seed && npm run start:single
-```
-
-Variables minimas:
-
-```env
-NODE_ENV=production
-API_PORT=4000
-APP_URL=https://TU-SERVICIO.seenode.app
-API_URL=https://TU-SERVICIO.seenode.app
-DATABASE_URL=postgresql://...
-REDIS_URL=redis://...
-JWT_SECRET=replace-with-at-least-32-random-characters
-ENCRYPTION_KEY=replace-with-32-byte-base64-key
-ADMIN_BOOTSTRAP_EMAIL=tu-email
-ADMIN_BOOTSTRAP_PASSWORD=tu-password-seguro
-TELEGRAM_API_ID=123456
-TELEGRAM_API_HASH=your_telegram_api_hash
-TELEGRAM_SESSION_LABEL=primary
-OPENAI_API_KEY=
-OPENAI_MODEL=gpt-4.1-mini
-MEDIA_STORAGE=s3
-MEDIA_MAX_MB=8
-S3_ENDPOINT=
-S3_REGION=
-S3_BUCKET=
-S3_ACCESS_KEY_ID=
-S3_SECRET_ACCESS_KEY=
-DEFAULT_TIMEZONE=America/La_Paz
-GLOBAL_AI_ENABLED=false
-GLOBAL_CAMPAIGNS_ENABLED=true
-PAYMENT_LINK=https://example.com/pay
-```
-
-Tambien necesitas PostgreSQL y Redis. Pueden ser servicios administrados externos o servicios de Seenode si los tienes disponibles. Sin PostgreSQL no hay CRM; sin Redis no funcionan colas, campanas y automatizaciones.
-
-## Deploy VPS / Railway / Render / Seenode separado
-
-1. Configura PostgreSQL y Redis administrados o usa `docker-compose.yml`.
-2. Define variables de entorno reales.
-3. Ejecuta:
-
-```bash
-npm ci
-npm run db:generate
-npm run build
-npm run db:deploy
-npm run start -w @crm/api
-npm run start -w @crm/worker
-```
-
-4. Sirve `apps/web/dist` con Nginx, Caddy o el servicio de frontend elegido.
-5. Monta almacenamiento persistente para `storage/media` o configura S3-compatible.
-
-## Docker
+## Docker local
 
 ```bash
 docker compose up --build
@@ -232,25 +262,7 @@ docker compose exec api npm run db:deploy
 docker compose exec api npm run db:seed
 ```
 
-## Backups
-
-PostgreSQL:
-
-```bash
-pg_dump "$DATABASE_URL" > backup-telegram-crm.sql
-```
-
-Media local:
-
-```bash
-tar -czf media-backup.tgz storage/media
-```
-
-## Auditoria
-
-Se registran logins, conexion/desconexion Telegram, envios, recepciones, IA, campanas, automatizaciones, errores, cambios de estado, etiquetas y compras en `AuditLog`.
-
 ## Referencias
 
-- GramJS QR login usa el flujo `signInUserWithQrCode`/`auth.ExportLoginToken` documentado en el repositorio de GramJS.
+- GramJS QR login usa el flujo `signInUserWithQrCode`/`auth.ExportLoginToken`.
 - `auth.AcceptLoginToken` y el formato `tg://login?token=...` corresponden a la documentacion TL de GramJS.
