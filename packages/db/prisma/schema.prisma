@@ -348,12 +348,16 @@ model MediaAsset {
   width          Int?
   height         Int?
   checksum       String?
+  temporary      Boolean     @default(false)
+  expiresAt      DateTime?
   deletedAt      DateTime?
   createdAt      DateTime    @default(now())
   campaigns      Campaign[]
   templates      Template[]
   messages       Message[]
   purchaseReceipts Purchase[] @relation("PurchaseReceipt")
+
+  @@index([temporary, expiresAt])
 }
 
 model Purchase {

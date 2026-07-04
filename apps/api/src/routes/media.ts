@@ -16,7 +16,7 @@ export const mediaRouter = Router();
 mediaRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(await prisma.mediaAsset.findMany({ where: { deletedAt: null }, orderBy: { createdAt: "desc" } }));
+    res.json(await prisma.mediaAsset.findMany({ where: { deletedAt: null, temporary: false }, orderBy: { createdAt: "desc" } }));
   })
 );
 

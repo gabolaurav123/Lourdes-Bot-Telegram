@@ -1,6 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type { Express } from "express";
 import sharp from "sharp";
 import { v4 as uuid } from "uuid";
@@ -13,25 +13,43 @@ const allowedTypes = new Set(["image/jpeg", "image/png", "image/webp"]);
 class MediaService {
   private s3?: S3Client;
 
-  async saveUpload(file: Express.Multer.File) {
-    if (!allowedTypes.has(file.mimetype)) {
+  async saveUpload(file: Express.Multer.File, options: { temporary?: boolean; ttlHours?: number } = {}) {
+    return this.saveBuffer({
+      buffer: file.buffer,
+      mimetype: file.mimetype,
+      originalName: file.originalname,
+      size: file.size,
+      temporary: options.temporary,
+      ttlHours: options.ttlHours
+    });
+  }
+
+  async saveBuffer(input: {
+    buffer: Buffer;
+    mimetype: string;
+    originalName: string;
+    size?: number;
+    temporary?: boolean;
+    ttlHours?: number;
+  }) {
+    if (!allowedTypes.has(input.mimetype)) {
       const error = new Error("Formato no permitido. Usa jpg, jpeg, png o webp.");
       (error as Error & { status?: number }).status = 400;
       throw error;
     }
 
     const maxBytes = config.media.maxMb * 1024 * 1024;
-    if (file.size > maxBytes) {
+    if ((input.size ?? input.buffer.length) > maxBytes) {
       const error = new Error(`Imagen demasiado grande. Maximo ${config.media.maxMb} MB.`);
       (error as Error & { status?: number }).status = 400;
       throw error;
     }
 
-    const image = sharp(file.buffer).rotate();
+    const image = sharp(input.buffer).rotate();
     const metadata = await image.metadata();
     const output = await image
       .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
-      .webp({ quality: file.size > 1_500_000 ? 78 : 88 })
+      .webp({ quality: (input.size ?? input.buffer.length) > 1_500_000 ? 78 : 88 })
       .toBuffer();
 
     const key = `${uuid()}.webp`;
@@ -54,12 +72,14 @@ class MediaService {
         url,
         storage,
         filename: key,
-        originalName: file.originalname,
+        originalName: input.originalName,
         mimeType: "image/webp",
         sizeBytes: output.length,
         width: metadata.width,
         height: metadata.height,
-        checksum
+        checksum,
+        temporary: input.temporary ?? false,
+        expiresAt: input.temporary ? new Date(Date.now() + (input.ttlHours ?? 24) * 60 * 60 * 1000) : undefined
       }
     });
   }
@@ -89,10 +109,51 @@ class MediaService {
   }
 
   async remove(id: string) {
-    return prisma.mediaAsset.update({
-      where: { id },
-      data: { deletedAt: new Date() }
+    const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id } });
+    await this.deleteStoredFile(asset);
+    return prisma.mediaAsset.update({ where: { id }, data: { deletedAt: new Date() } });
+  }
+
+  async cleanupExpiredTemporary() {
+    const expired = await prisma.mediaAsset.findMany({
+      where: {
+        temporary: true,
+        deletedAt: null,
+        expiresAt: { lte: new Date() }
+      },
+      take: 100
     });
+
+    for (const asset of expired) {
+      await this.deleteStoredFile(asset).catch(() => undefined);
+      await prisma.mediaAsset.update({
+        where: { id: asset.id },
+        data: { deletedAt: new Date() }
+      });
+    }
+
+    return { count: expired.length };
+  }
+
+  private async deleteStoredFile(asset: { storage: string; filename: string; key: string }) {
+    if (asset.storage === "s3") {
+      if (!config.media.s3Bucket) return;
+      this.s3 ??= new S3Client({
+        endpoint: config.media.s3Endpoint,
+        region: config.media.s3Region,
+        credentials: config.media.s3AccessKeyId
+          ? {
+              accessKeyId: config.media.s3AccessKeyId,
+              secretAccessKey: config.media.s3SecretAccessKey ?? ""
+            }
+          : undefined,
+        forcePathStyle: true
+      });
+      await this.s3.send(new DeleteObjectCommand({ Bucket: config.media.s3Bucket, Key: asset.key }));
+      return;
+    }
+
+    await fs.rm(path.resolve(config.media.localDir, asset.filename), { force: true });
   }
 }
 

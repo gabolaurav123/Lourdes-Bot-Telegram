@@ -12,6 +12,7 @@ import { sanitizeText } from "../lib/sanitize";
 import { assertCanMessageLead } from "./permission.service";
 import { aiService } from "./ai.service";
 import { automationService } from "./automation.service";
+import { mediaService } from "./media.service";
 
 type DialogLike = {
   id?: unknown;
@@ -380,10 +381,12 @@ class TelegramService {
     if (!chatId) return;
 
     const text = sanitizeText(message.message ?? "");
+    const activeClient = await this.requireClient();
+    const mediaAsset = await this.saveIncomingImage(activeClient, message).catch(() => null);
     const conversation = await prisma.conversation.upsert({
       where: { telegramChatId: chatId },
       update: {
-        lastMessage: text || "[media]",
+        lastMessage: text || (mediaAsset ? "[imagen]" : "[media]"),
         lastMessageAt: new Date(),
         unreadCount: { increment: 1 },
         userWroteFirst: true,
@@ -393,7 +396,7 @@ class TelegramService {
         telegramChatId: chatId,
         name: chatId,
         type: "PRIVATE",
-        lastMessage: text || "[media]",
+        lastMessage: text || (mediaAsset ? "[imagen]" : "[media]"),
         lastMessageAt: new Date(),
         unreadCount: 1,
         userWroteFirst: true,
@@ -412,6 +415,7 @@ class TelegramService {
         direction: "INBOUND",
         status: "RECEIVED",
         body: text,
+        mediaAssetId: mediaAsset?.id,
         receivedAt: new Date()
       }
     });
@@ -437,6 +441,37 @@ class TelegramService {
         intent: "ai_reply"
       });
     }
+  }
+
+  private async saveIncomingImage(client: TelegramClient, message: NewMessageEvent["message"]) {
+    const media = (message as unknown as { media?: unknown }).media;
+    if (!media) return null;
+
+    const mediaRecord = media as {
+      className?: string;
+      photo?: unknown;
+      document?: {
+        mimeType?: string;
+        attributes?: Array<{ fileName?: string }>;
+      };
+    };
+    const mimeType = mediaRecord.document?.mimeType ?? (String(mediaRecord.className ?? "").includes("Photo") || mediaRecord.photo ? "image/jpeg" : "");
+    if (!["image/jpeg", "image/png", "image/webp"].includes(mimeType)) return null;
+
+    const downloaded = await (client as unknown as {
+      downloadMedia: (media: unknown, options?: Record<string, unknown>) => Promise<Buffer | Uint8Array | string | undefined>;
+    }).downloadMedia(media, {});
+    if (!downloaded || typeof downloaded === "string") return null;
+
+    const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded);
+    const originalName = mediaRecord.document?.attributes?.find((attribute) => attribute.fileName)?.fileName ?? `telegram-${message.id}.jpg`;
+    return mediaService.saveBuffer({
+      buffer,
+      mimetype: mimeType,
+      originalName,
+      temporary: true,
+      ttlHours: 24
+    });
   }
 
   private async ensureLeadForConversation(conversationId: string, chatId: string, fallbackName: string, inboundText?: string) {

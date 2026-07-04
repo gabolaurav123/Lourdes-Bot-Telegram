@@ -654,7 +654,10 @@ function InboxView(props: {
               {props.messages.length === 0 && <p className="rounded-md bg-white px-3 py-2 text-sm text-zinc-500 shadow-sm">No hay mensajes guardados para esta conversacion.</p>}
               {props.messages.map((message) => (
                 <div key={message.id} className={clsx("max-w-[78%] rounded-lg px-3 py-2 text-sm shadow-sm", message.direction === "OUTBOUND" ? "ml-auto bg-pine text-white" : "bg-white text-ink")}>
-                  <p>{message.body || "[imagen]"}</p>
+                  {message.mediaAsset && (
+                    <img src={mediaUrl(message.mediaAsset.url)} alt={message.mediaAsset.originalName} className="mb-2 max-h-64 rounded-md object-contain" />
+                  )}
+                  <p>{message.body || (message.mediaAsset ? "[imagen temporal]" : "[imagen]")}</p>
                   <div className={clsx("mt-1 flex items-center gap-1 text-[11px]", message.direction === "OUTBOUND" ? "text-white/70" : "text-zinc-400")}>
                     {message.aiGenerated && <WandSparkles size={12} />}
                     {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -833,7 +836,9 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
   });
   const [preview, setPreview] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const [attachedImage, setAttachedImage] = useState<MediaAsset | null>(null);
   const selectedSegment = campaignSegments.find((item) => item.value === form.segment) ?? campaignSegments[0];
+  const selectedImage = attachedImage?.id === form.imageId ? attachedImage : mediaAssets.find((asset) => asset.id === form.imageId) ?? null;
   const leadCounts = useMemo(() => {
     const optIn = leads.filter((lead) => lead.optInCommercial).length;
     const followUp = leads.filter((lead) => lead.followUpAllowed).length;
@@ -872,6 +877,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
         sensitive: form.sensitive
       });
       setForm((current) => ({ ...current, name: "", description: "", message: "", imageId: "", link: "" }));
+      setAttachedImage(null);
       await onReload();
     } catch (error) {
       onError(messageFromError(error));
@@ -884,6 +890,28 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
     try {
       await action();
       await onReload();
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  async function uploadCampaignImage(file: File | undefined) {
+    if (!file) return;
+    try {
+      const asset = await api.uploadMedia(file);
+      setAttachedImage(asset);
+      setForm((current) => ({ ...current, imageId: asset.id }));
+    } catch (error) {
+      onError(messageFromError(error));
+    }
+  }
+
+  async function removeCampaignImage() {
+    const uploadedHere = attachedImage?.id === form.imageId ? attachedImage : null;
+    try {
+      if (uploadedHere) await api.deleteMedia(uploadedHere.id);
+      setAttachedImage(null);
+      setForm((current) => ({ ...current, imageId: "" }));
     } catch (error) {
       onError(messageFromError(error));
     }
@@ -935,6 +963,27 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
             <span className="field-label">Pausa segundos</span>
             <input className="field" type="number" min={30} max={3600} value={form.pauseSeconds} onChange={(event) => setForm({ ...form, pauseSeconds: event.target.value })} />
           </label>
+        </div>
+        <div className="mt-3 rounded-md border border-line p-3">
+          {selectedImage ? (
+            <div className="flex gap-3">
+              <img src={mediaUrl(selectedImage.url)} alt={selectedImage.originalName} className="h-20 w-20 rounded-md object-cover" />
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-sm font-medium">{selectedImage.originalName}</p>
+                <p className="text-xs text-zinc-500">{Math.round(selectedImage.sizeBytes / 1024)} KB</p>
+                <button type="button" className="button-secondary mt-2" onClick={removeCampaignImage}>
+                  <Trash2 size={16} />
+                  Quitar imagen
+                </button>
+              </div>
+            </div>
+          ) : (
+            <label className="button-secondary inline-flex cursor-pointer">
+              <Upload size={16} />
+              Subir imagen de campana
+              <input className="hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void uploadCampaignImage(event.target.files?.[0])} />
+            </label>
+          )}
         </div>
         <label className="field-label mt-3">Link opcional</label>
         <input className="field" value={form.link} onChange={(event) => setForm({ ...form, link: event.target.value })} placeholder="https://..." />

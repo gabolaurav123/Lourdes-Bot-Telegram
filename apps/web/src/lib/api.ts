@@ -36,6 +36,7 @@ export type Message = {
   id: string;
   direction: "INBOUND" | "OUTBOUND" | "INTERNAL" | "SYSTEM" | string;
   body?: string | null;
+  mediaAsset?: MediaAsset | null;
   createdAt: string;
   aiGenerated?: boolean;
 };
