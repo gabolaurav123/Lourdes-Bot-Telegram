@@ -1458,6 +1458,20 @@ function SettingsView(props: {
     try {
       await api.logoutTelegram();
       props.setTelegram(await api.telegramStatus());
+      await props.onReloadAll();
+    } catch (error) {
+      props.onError(messageFromError(error));
+    }
+  }
+
+  async function resetCrmData() {
+    const confirmText = window.prompt("Esto borra inbox, leads, campanas, compras y colas de prueba. Escribe REINICIAR para continuar.");
+    if (confirmText !== "REINICIAR") return;
+
+    try {
+      await api.resetTelegramCrm();
+      props.setTelegram(await api.telegramStatus());
+      await props.onReloadAll();
     } catch (error) {
       props.onError(messageFromError(error));
     }
@@ -1484,7 +1498,11 @@ function SettingsView(props: {
         </button>
         <button onClick={logoutTelegram} className="button-secondary mt-2 w-full justify-center">
           <LogOut size={17} />
-          Cerrar Telegram
+          Cancelar QR / desconectar
+        </button>
+        <button onClick={resetCrmData} className="button-secondary mt-2 w-full justify-center">
+          <ArchiveX size={17} />
+          Reiniciar datos de prueba
         </button>
       </div>
 

@@ -132,7 +132,7 @@ class TelegramService {
           }
         });
         this.attachIncomingHandler(client);
-        await this.syncDialogs(100);
+        await this.syncDialogs(config.telegram.syncLimit);
       })
       .catch(async (error: Error) => {
         await prisma.telegramSession.update({
@@ -188,6 +188,67 @@ class TelegramService {
         disconnectedAt: new Date()
       }
     });
+  }
+
+  async resetCrmData() {
+    await this.logout().catch(() => undefined);
+
+    const [
+      campaignRecipients,
+      automationRuns,
+      messages,
+      purchases,
+      leadTags,
+      conversations,
+      leads,
+      campaigns,
+      automations
+    ] = await prisma.$transaction([
+      prisma.campaignRecipient.deleteMany(),
+      prisma.automationRun.deleteMany(),
+      prisma.message.deleteMany(),
+      prisma.purchase.deleteMany(),
+      prisma.leadTag.deleteMany(),
+      prisma.conversation.deleteMany(),
+      prisma.lead.deleteMany(),
+      prisma.campaign.deleteMany(),
+      prisma.automation.deleteMany()
+    ]);
+
+    await prisma.telegramSession.upsert({
+      where: { label: config.telegram.sessionLabel },
+      update: {
+        status: "DISCONNECTED",
+        encryptedSession: null,
+        qrCodeDataUrl: null,
+        qrExpiresAt: null,
+        phone: null,
+        username: null,
+        displayName: null,
+        lastError: null,
+        disconnectedAt: new Date()
+      },
+      create: {
+        label: config.telegram.sessionLabel,
+        status: "DISCONNECTED",
+        disconnectedAt: new Date()
+      }
+    });
+
+    return {
+      ok: true,
+      deleted: {
+        campaignRecipients: campaignRecipients.count,
+        automationRuns: automationRuns.count,
+        messages: messages.count,
+        purchases: purchases.count,
+        leadTags: leadTags.count,
+        conversations: conversations.count,
+        leads: leads.count,
+        campaigns: campaigns.count,
+        automations: automations.count
+      }
+    };
   }
 
   async syncDialogs(limit = 100) {

@@ -174,6 +174,7 @@ export const api = {
   startQr: () => request<{ status: string; qrCodeDataUrl?: string | null }>("/api/telegram/qr/start", { method: "POST" }),
   syncTelegram: (limit = 1000) => request<{ count: number }>("/api/telegram/sync", { method: "POST", body: JSON.stringify({ limit }) }),
   logoutTelegram: () => request<{ ok: boolean }>("/api/telegram/logout", { method: "POST" }),
+  resetTelegramCrm: () => request<{ ok: boolean; deleted: Record<string, number> }>("/api/telegram/reset", { method: "POST", body: JSON.stringify({ confirm: "REINICIAR" }) }),
   campaigns: () => request<Campaign[]>("/api/campaigns"),
   createCampaign: (payload: Record<string, unknown>) => request<Campaign>("/api/campaigns", { method: "POST", body: JSON.stringify(payload) }),
   activateCampaign: (id: string) => request<Campaign>(`/api/campaigns/${id}/activate`, { method: "POST" }),

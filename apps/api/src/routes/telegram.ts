@@ -43,3 +43,18 @@ telegramRouter.post(
     res.json({ ok: true });
   })
 );
+
+telegramRouter.post(
+  "/reset",
+  requireRole("OWNER", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    if (req.body?.confirm !== "REINICIAR") {
+      res.status(400).json({ error: "Confirmacion requerida" });
+      return;
+    }
+
+    const result = await telegramService.resetCrmData();
+    await auditLog(req, "CRM_RESET", { metadata: result.deleted });
+    res.json(result);
+  })
+);
