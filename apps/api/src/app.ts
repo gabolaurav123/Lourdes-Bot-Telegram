@@ -25,7 +25,18 @@ export function createApp() {
   const app = express();
 
   app.use(helmet());
-  app.use(cors({ origin: config.appUrl, credentials: true }));
+  app.use(
+    cors({
+      origin(origin, callback) {
+        if (!origin || config.corsOrigins.includes(origin.replace(/\/$/, ""))) {
+          callback(null, true);
+          return;
+        }
+        callback(new Error(`Origin not allowed by CORS: ${origin}`));
+      },
+      credentials: true
+    })
+  );
   app.use(compression());
   app.use(cookieParser());
   app.use(express.json({ limit: "2mb" }));

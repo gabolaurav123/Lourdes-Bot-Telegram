@@ -137,14 +137,19 @@ export function mediaUrl(url?: string | null) {
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const isFormData = init.body instanceof FormData;
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...init,
-    headers: {
-      ...(isFormData ? {} : { "Content-Type": "application/json" }),
-      ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
-      ...(init.headers ?? {})
-    }
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, {
+      ...init,
+      headers: {
+        ...(isFormData ? {} : { "Content-Type": "application/json" }),
+        ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
+        ...(init.headers ?? {})
+      }
+    });
+  } catch {
+    throw new Error("No se pudo conectar con la API. Revisa VITE_API_URL en la web y APP_URL/CORS_ORIGINS en la API.");
+  }
   if (!response.ok) throw new Error(await response.text());
   return (await response.json()) as T;
 }

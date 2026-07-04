@@ -8,11 +8,25 @@ function required(name: string, fallback?: string) {
   return value;
 }
 
+function cleanUrl(value: string) {
+  return value.replace(/\/$/, "");
+}
+
+function listEnv(name: string, fallback: string) {
+  return (process.env[name] ?? fallback)
+    .split(",")
+    .map((value) => cleanUrl(value.trim()))
+    .filter(Boolean);
+}
+
+const appUrl = cleanUrl(process.env.APP_URL ?? "http://localhost:5173");
+
 export const config = {
   nodeEnv: process.env.NODE_ENV ?? "development",
-  apiPort: Number(process.env.API_PORT ?? 4000),
-  appUrl: process.env.APP_URL ?? "http://localhost:5173",
-  apiUrl: process.env.API_URL ?? "http://localhost:4000",
+  apiPort: Number(process.env.PORT ?? process.env.API_PORT ?? 4000),
+  appUrl,
+  corsOrigins: listEnv("CORS_ORIGINS", appUrl),
+  apiUrl: cleanUrl(process.env.API_URL ?? "http://localhost:4000"),
   jwtSecret: required("JWT_SECRET", "dev-only-change-me-please-32-chars"),
   encryptionKey: required("ENCRYPTION_KEY", "dev-only-change-me-please-32-chars"),
   telegram: {
