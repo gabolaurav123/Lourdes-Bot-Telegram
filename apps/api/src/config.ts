@@ -32,7 +32,9 @@ export const config = {
   telegram: {
     apiId: Number(process.env.TELEGRAM_API_ID ?? 0),
     apiHash: process.env.TELEGRAM_API_HASH ?? "",
-    sessionLabel: process.env.TELEGRAM_SESSION_LABEL ?? "primary"
+    sessionLabel: process.env.TELEGRAM_SESSION_LABEL ?? "primary",
+    syncLimit: Number(process.env.TELEGRAM_SYNC_LIMIT ?? 1000),
+    syncMessageLimit: Number(process.env.TELEGRAM_SYNC_MESSAGE_LIMIT ?? 30)
   },
   openai: {
     apiKey: process.env.OPENAI_API_KEY ?? "",

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { asyncHandler } from "../lib/async";
 import { auditLog } from "../lib/audit";
+import { config } from "../config";
 import { requireRole } from "../middleware/requireRole";
 import { telegramService } from "../services/telegram.service";
 
@@ -27,7 +28,7 @@ telegramRouter.post(
   "/sync",
   requireRole("OWNER", "ADMIN"),
   asyncHandler(async (req, res) => {
-    const result = await telegramService.syncDialogs(Number(req.body?.limit ?? 100));
+    const result = await telegramService.syncDialogs(Number(req.body?.limit ?? config.telegram.syncLimit));
     await auditLog(req, "TELEGRAM_SYNC", { metadata: result });
     res.json(result);
   })

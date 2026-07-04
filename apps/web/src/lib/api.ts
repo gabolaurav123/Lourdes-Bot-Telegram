@@ -12,6 +12,8 @@ export type Lead = {
   followUpAllowed: boolean;
   aiEnabled?: boolean;
   notes?: string | null;
+  userWroteFirst?: boolean;
+  conversationActive?: boolean;
   totalSpent: number | string;
   lastInboundMessage?: string | null;
   lastInteractionAt?: string | null;
@@ -170,7 +172,7 @@ export const api = {
     request(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
   telegramStatus: () => request<{ status: string; qrCodeDataUrl?: string | null; username?: string | null }>("/api/telegram/status"),
   startQr: () => request<{ status: string; qrCodeDataUrl?: string | null }>("/api/telegram/qr/start", { method: "POST" }),
-  syncTelegram: (limit = 100) => request<{ synced: number }>("/api/telegram/sync", { method: "POST", body: JSON.stringify({ limit }) }),
+  syncTelegram: (limit = 1000) => request<{ count: number }>("/api/telegram/sync", { method: "POST", body: JSON.stringify({ limit }) }),
   logoutTelegram: () => request<{ ok: boolean }>("/api/telegram/logout", { method: "POST" }),
   campaigns: () => request<Campaign[]>("/api/campaigns"),
   createCampaign: (payload: Record<string, unknown>) => request<Campaign>("/api/campaigns", { method: "POST", body: JSON.stringify(payload) }),

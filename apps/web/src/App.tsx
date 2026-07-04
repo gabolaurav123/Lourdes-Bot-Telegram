@@ -137,12 +137,14 @@ const automationActions = [
 ];
 
 const campaignSegments = [
-  { value: "optin", label: "Leads con opt-in", segment: { optInCommercial: true } },
-  { value: "adult", label: "Opt-in + mayor de edad", segment: { optInCommercial: true, ageConfirmed: true } },
-  { value: "interested", label: "Interesados", segment: { optInCommercial: true, status: "INTERESADO" } },
-  { value: "hot", label: "Calientes", segment: { optInCommercial: true, status: "CALIENTE" } },
-  { value: "buyers", label: "Compradores", segment: { optInCommercial: true, status: "COMPRO" } }
+  { value: "optin", label: "Opt-in + permiso de seguimiento", segment: { optInCommercial: true } },
+  { value: "adult", label: "Opt-in + seguimiento + mayor de edad", segment: { optInCommercial: true, ageConfirmed: true } },
+  { value: "interested", label: "Interesados con opt-in", segment: { optInCommercial: true, status: "INTERESADO" } },
+  { value: "hot", label: "Calientes con opt-in", segment: { optInCommercial: true, status: "CALIENTE" } },
+  { value: "buyers", label: "Compradores con opt-in", segment: { optInCommercial: true, status: "COMPRO" } }
 ];
+
+const excludedCampaignStatuses = ["NO_VOLVER_A_ESCRIBIR", "NO_INTERESADO", "BLOQUEADO", "ERROR"];
 
 const templateVariables = ["nombre", "username", "precio", "plan", "link_pago", "link_bot", "fecha", "fuente"];
 
@@ -436,7 +438,7 @@ export function App() {
             await api.updateLead(id, payload);
             await refreshLeadsAndConversations();
           }} />}
-          {section === "campaigns" && <CampaignsView campaigns={campaigns} mediaAssets={mediaAssets} onReload={refreshCampaigns} onError={setLoadError} />}
+          {section === "campaigns" && <CampaignsView campaigns={campaigns} leads={leads} mediaAssets={mediaAssets} onReload={refreshCampaigns} onError={setLoadError} />}
           {section === "automations" && <AutomationsView automations={automations} mediaAssets={mediaAssets} onReload={refreshAutomations} onError={setLoadError} />}
           {section === "templates" && <TemplatesView templates={templates} mediaAssets={mediaAssets} onReload={refreshTemplates} onError={setLoadError} />}
           {section === "media" && <MediaView mediaAssets={mediaAssets} onReload={refreshMedia} onError={setLoadError} />}
@@ -747,6 +749,7 @@ function LeadsView({ leads, search, setSearch, onUpdateLead }: { leads: Lead[]; 
     () => leads.filter((lead) => `${lead.name} ${lead.username ?? ""} ${lead.status}`.toLowerCase().includes(search.toLowerCase())),
     [leads, search]
   );
+  const consentCount = leads.filter((lead) => lead.optInCommercial && lead.followUpAllowed).length;
 
   return (
     <section className="rounded-lg border border-line bg-white shadow-soft">
@@ -755,7 +758,10 @@ function LeadsView({ leads, search, setSearch, onUpdateLead }: { leads: Lead[]; 
           <Search size={16} className="text-zinc-400" />
           <input className="w-full bg-transparent text-sm outline-none" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar lead" />
         </div>
-        <p className="text-sm text-zinc-500">{filtered.length} leads reales</p>
+        <div className="text-right text-sm text-zinc-500">
+          <p>{filtered.length} leads reales</p>
+          <p>{consentCount} con opt-in y seguimiento</p>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full min-w-[980px] text-left text-sm">
@@ -797,6 +803,8 @@ function LeadsView({ leads, search, setSearch, onUpdateLead }: { leads: Lead[]; 
                 <td className="px-4 py-3">{formatMoney(lead.totalSpent)}</td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap gap-2">
+                    <button className="button-secondary" onClick={() => onUpdateLead(lead.id, { optInCommercial: true, followUpAllowed: true })}>Consentimiento</button>
+                    <button className="button-secondary" onClick={() => onUpdateLead(lead.id, { ageConfirmed: true })}>Edad</button>
                     <button className="button-secondary" onClick={() => onUpdateLead(lead.id, { status: "CALIENTE" })}>Caliente</button>
                     <button className="button-secondary" onClick={() => onUpdateLead(lead.id, { status: "NO_VOLVER_A_ESCRIBIR", followUpAllowed: false, optInCommercial: false, aiEnabled: false })}>Stop</button>
                   </div>
@@ -810,7 +818,7 @@ function LeadsView({ leads, search, setSearch, onUpdateLead }: { leads: Lead[]; 
   );
 }
 
-function CampaignsView({ campaigns, mediaAssets, onReload, onError }: { campaigns: Campaign[]; mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { campaigns: Campaign[]; leads: Lead[]; mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -825,16 +833,36 @@ function CampaignsView({ campaigns, mediaAssets, onReload, onError }: { campaign
   });
   const [preview, setPreview] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+  const selectedSegment = campaignSegments.find((item) => item.value === form.segment) ?? campaignSegments[0];
+  const leadCounts = useMemo(() => {
+    const optIn = leads.filter((lead) => lead.optInCommercial).length;
+    const followUp = leads.filter((lead) => lead.followUpAllowed).length;
+    const eligible = leads.filter((lead) => {
+      if (!lead.optInCommercial || !lead.followUpAllowed) return false;
+      if (excludedCampaignStatuses.includes(lead.status)) return false;
+      if (!lead.userWroteFirst && !lead.conversationActive) return false;
+      if (selectedSegment.segment.status && lead.status !== selectedSegment.segment.status) return false;
+      if (selectedSegment.segment.ageConfirmed && !lead.ageConfirmed) return false;
+      if (form.sensitive && !lead.ageConfirmed) return false;
+      return true;
+    }).length;
+
+    return { total: leads.length, optIn, followUp, eligible };
+  }, [form.sensitive, leads, selectedSegment]);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
+    const name = form.name.trim();
+    if (name.length < 2) {
+      onError("El nombre de la campana debe tener al menos 2 caracteres.");
+      return;
+    }
     setSaving(true);
     try {
-      const segment = campaignSegments.find((item) => item.value === form.segment)?.segment ?? { optInCommercial: true };
       await api.createCampaign({
-        name: form.name.trim(),
+        name,
         description: form.description.trim() || undefined,
-        segment,
+        segment: selectedSegment.segment,
         message: form.message,
         imageId: form.imageId || undefined,
         link: form.link.trim(),
@@ -869,13 +897,22 @@ function CampaignsView({ campaigns, mediaAssets, onReload, onError }: { campaign
           <h2 className="text-sm font-semibold">Nueva campana permitida</h2>
         </div>
         <label className="field-label mt-4">Nombre</label>
-        <input className="field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+        <input className="field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required minLength={2} />
         <label className="field-label mt-3">Descripcion</label>
         <input className="field" value={form.description} onChange={(event) => setForm({ ...form, description: event.target.value })} />
         <label className="field-label mt-3">Segmento</label>
         <select className="field" value={form.segment} onChange={(event) => setForm({ ...form, segment: event.target.value })}>
           {campaignSegments.map((segment) => <option key={segment.value} value={segment.value}>{segment.label}</option>)}
         </select>
+        <div className="mt-3 rounded-md border border-line bg-panel p-3 text-sm text-zinc-600">
+          <div className="grid grid-cols-2 gap-2">
+            <span>Total leads: <strong>{leadCounts.total}</strong></span>
+            <span>Opt-in: <strong>{leadCounts.optIn}</strong></span>
+            <span>Seguimiento: <strong>{leadCounts.followUp}</strong></span>
+            <span>Elegibles: <strong>{leadCounts.eligible}</strong></span>
+          </div>
+          <p className="mt-2 text-xs">Las campanas no usan todos los chats: solo leads con opt-in, permiso de seguimiento, conversacion valida y sin estado excluido.</p>
+        </div>
         <label className="field-label mt-3">Mensaje</label>
         <textarea className="min-h-32 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} required />
         <div className="mt-3 grid gap-3 md:grid-cols-2">
@@ -918,7 +955,7 @@ function CampaignsView({ campaigns, mediaAssets, onReload, onError }: { campaign
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold">{campaign.name}</p>
-                <p className="mt-1 text-xs text-zinc-500">{campaign.description || "Sin descripcion"} · {campaign._count?.recipients ?? 0} destinatarios preparados</p>
+                <p className="mt-1 text-xs text-zinc-500">{campaign.description || "Sin descripcion"} - {campaign._count?.recipients ?? 0} destinatarios preparados</p>
               </div>
               <StatusBadge status={campaign.status} />
             </div>
@@ -1086,7 +1123,7 @@ function AutomationsView({ automations, mediaAssets, onReload, onError }: { auto
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold">{automation.name}</p>
-                <p className="mt-1 text-xs text-zinc-500">{automation.trigger} · delay {automation.delaySeconds}s · {automation.action}</p>
+                <p className="mt-1 text-xs text-zinc-500">{automation.trigger} - delay {automation.delaySeconds}s - {automation.action}</p>
               </div>
               <StatusBadge status={automation.status} />
             </div>
@@ -1261,7 +1298,7 @@ function MediaView({ mediaAssets, onReload, onError }: { mediaAssets: MediaAsset
             </div>
             <div className="p-3">
               <p className="truncate text-sm font-medium">{asset.originalName}</p>
-              <p className="text-xs text-zinc-500">{Math.round(asset.sizeBytes / 1024)} KB · {new Date(asset.createdAt).toLocaleDateString()}</p>
+              <p className="text-xs text-zinc-500">{Math.round(asset.sizeBytes / 1024)} KB - {new Date(asset.createdAt).toLocaleDateString()}</p>
               <button className="button-secondary mt-3" onClick={() => remove(asset.id)}>
                 <Trash2 size={16} />
                 Eliminar
@@ -1333,8 +1370,8 @@ function PurchasesView({ leads, purchases, onReload, onError }: { leads: Lead[];
           <div key={purchase.id} className="rounded-lg border border-line bg-white p-4 shadow-soft">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="text-sm font-semibold">{purchase.lead?.name ?? "Lead"} · {formatMoney(purchase.amount)}</p>
-                <p className="mt-1 text-xs text-zinc-500">{purchase.plan} · {purchase.paymentMethod} · {new Date(purchase.createdAt).toLocaleDateString()}</p>
+                <p className="text-sm font-semibold">{purchase.lead?.name ?? "Lead"} - {formatMoney(purchase.amount)}</p>
+                <p className="mt-1 text-xs text-zinc-500">{purchase.plan} - {purchase.paymentMethod} - {new Date(purchase.createdAt).toLocaleDateString()}</p>
               </div>
               <StatusBadge status={purchase.status} />
             </div>
@@ -1410,7 +1447,7 @@ function SettingsView(props: {
 
   async function syncTelegram() {
     try {
-      await api.syncTelegram(100);
+      await api.syncTelegram(1000);
       await props.onReloadAll();
     } catch (error) {
       props.onError(messageFromError(error));
