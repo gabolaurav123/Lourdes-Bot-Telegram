@@ -31,7 +31,7 @@ import {
   WandSparkles,
   Workflow
 } from "lucide-react";
-import { api, demoConversations, demoLeads, demoMessages, demoStats, getToken, setToken, type StatMap } from "./lib/api";
+import { api, emptyStats, getToken, setToken, type Conversation, type Lead, type Message, type StatMap } from "./lib/api";
 import { StatCard } from "./components/StatCard";
 
 type Section = "dashboard" | "inbox" | "leads" | "campaigns" | "automations" | "templates" | "media" | "purchases" | "settings";
@@ -51,31 +51,43 @@ const sections: { id: Section; label: string; icon: typeof LayoutDashboard }[] =
 export function App() {
   const [tokenReady, setTokenReady] = useState(Boolean(getToken()));
   const [section, setSection] = useState<Section>("dashboard");
-  const [stats, setStats] = useState<StatMap>(demoStats);
-  const [leads, setLeads] = useState(demoLeads);
-  const [conversations, setConversations] = useState(demoConversations);
-  const [messages, setMessages] = useState(demoMessages);
-  const [selectedConversation, setSelectedConversation] = useState(demoConversations[0]);
+  const [stats, setStats] = useState<StatMap>(emptyStats);
+  const [leads, setLeads] = useState<Lead[]>([]);
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
+  const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [telegram, setTelegram] = useState<{ status: string; qrCodeDataUrl?: string | null; username?: string | null }>({ status: "DISCONNECTED" });
   const [composer, setComposer] = useState("");
   const [search, setSearch] = useState("");
+  const [loadError, setLoadError] = useState("");
 
   useEffect(() => {
     if (!tokenReady) return;
+    setLoadError("");
     void Promise.all([
-      api.dashboard().then(setStats),
-      api.leads().then(setLeads),
-      api.conversations().then((items) => {
-        setConversations(items);
-        setSelectedConversation(items[0] ?? demoConversations[0]);
-      }),
-      api.telegramStatus().then(setTelegram)
-    ]);
+      api.dashboard(),
+      api.leads(),
+      api.conversations(),
+      api.telegramStatus()
+    ]).then(([dashboardStats, leadItems, conversationItems, telegramStatus]) => {
+      setStats(dashboardStats);
+      setLeads(leadItems);
+      setConversations(conversationItems);
+      setSelectedConversation(conversationItems[0] ?? null);
+      setTelegram(telegramStatus);
+    }).catch((error) => {
+      setStats(emptyStats);
+      setLeads([]);
+      setConversations([]);
+      setSelectedConversation(null);
+      setMessages([]);
+      setLoadError(error instanceof Error ? error.message : "No se pudo conectar con la API");
+    });
   }, [tokenReady]);
 
   useEffect(() => {
     if (!selectedConversation?.id) return;
-    void api.messages(selectedConversation.id).then(setMessages);
+    void api.messages(selectedConversation.id).then(setMessages).catch(() => setMessages([]));
   }, [selectedConversation?.id]);
 
   if (!tokenReady) return <Login onReady={() => setTokenReady(true)} />;
@@ -150,6 +162,11 @@ export function App() {
         </header>
 
         <div className="px-4 py-5 lg:px-7">
+          {loadError && (
+            <div className="mb-4 rounded-lg border border-coral/30 bg-coral/10 px-4 py-3 text-sm text-coral">
+              No se pudo cargar informacion real desde la API. Revisa `VITE_API_URL`, el token de sesion o la API. Detalle: {loadError}
+            </div>
+          )}
           {section === "dashboard" && <Dashboard stats={stats} telegram={telegram} onStartQr={async () => setTelegram(await api.startQr())} />}
           {section === "inbox" && (
             <InboxView
@@ -160,7 +177,7 @@ export function App() {
               composer={composer}
               setComposer={setComposer}
               onSend={async () => {
-                if (!composer.trim()) return;
+                if (!composer.trim() || !selectedConversation) return;
                 setMessages((items) => [...items, { id: crypto.randomUUID(), direction: "OUTBOUND", body: composer, createdAt: new Date().toISOString() }]);
                 await api.sendMessage(selectedConversation.id, composer).catch(() => undefined);
                 setComposer("");
@@ -192,13 +209,8 @@ function Login({ onReady }: { onReady: () => void }) {
       const result = await api.login(email, password);
       setToken(result.token);
       onReady();
-    } catch {
-      if (email && password) {
-        setToken("demo-token");
-        onReady();
-        return;
-      }
-      setError("No se pudo iniciar sesion");
+    } catch (loginError) {
+      setError(loginError instanceof Error ? loginError.message : "No se pudo iniciar sesion");
     }
   }
 
@@ -302,10 +314,10 @@ function Dashboard({ stats, telegram, onStartQr }: { stats: StatMap; telegram: {
 }
 
 function InboxView(props: {
-  conversations: typeof demoConversations;
-  selected: typeof demoConversations[number];
-  onSelect: (conversation: typeof demoConversations[number]) => void;
-  messages: typeof demoMessages;
+  conversations: Conversation[];
+  selected: Conversation | null;
+  onSelect: (conversation: Conversation) => void;
+  messages: Message[];
   composer: string;
   setComposer: (value: string) => void;
   onSend: () => void;
@@ -320,6 +332,9 @@ function InboxView(props: {
           </div>
         </div>
         <div className="h-full overflow-y-auto">
+          {props.conversations.length === 0 && (
+            <div className="p-4 text-sm text-zinc-500">No hay conversaciones reales sincronizadas todavia.</div>
+          )}
           {props.conversations.map((conversation) => (
             <button
               key={conversation.id}
@@ -343,7 +358,7 @@ function InboxView(props: {
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex h-14 items-center justify-between border-b border-line px-4">
             <div>
-              <h2 className="text-sm font-semibold">{props.selected?.name}</h2>
+              <h2 className="text-sm font-semibold">{props.selected?.name ?? "Selecciona una conversacion"}</h2>
               <p className="text-xs text-zinc-500">{props.selected?.lead?.status ?? "Sin lead"}</p>
             </div>
             <div className="flex gap-2">
@@ -439,7 +454,7 @@ function QueueItem({ title, time }: { title: string; time: string }) {
   );
 }
 
-function LeadsView({ leads, search, setSearch }: { leads: typeof demoLeads; search: string; setSearch: (value: string) => void }) {
+function LeadsView({ leads, search, setSearch }: { leads: Lead[]; search: string; setSearch: (value: string) => void }) {
   const filtered = useMemo(
     () => leads.filter((lead) => `${lead.name} ${lead.username} ${lead.status}`.toLowerCase().includes(search.toLowerCase())),
     [leads, search]
@@ -609,7 +624,7 @@ function MediaView() {
   );
 }
 
-function PurchasesView({ leads }: { leads: typeof demoLeads }) {
+function PurchasesView({ leads }: { leads: Lead[] }) {
   return (
     <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
       <form className="rounded-lg border border-line bg-white p-4 shadow-soft">

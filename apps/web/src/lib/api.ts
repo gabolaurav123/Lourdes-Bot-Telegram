@@ -1,6 +1,57 @@
 export type StatMap = Record<string, number | string>;
 
+export type Lead = {
+  id: string;
+  name: string;
+  username?: string | null;
+  status: string;
+  optInCommercial: boolean;
+  ageConfirmed: boolean;
+  followUpAllowed: boolean;
+  totalSpent: number | string;
+  lastInboundMessage?: string | null;
+  tags: { tag: { name: string; color: string } }[];
+};
+
+export type Conversation = {
+  id: string;
+  name: string;
+  type: string;
+  lastMessage?: string | null;
+  unreadCount: number;
+  responded: boolean;
+  conversationActive: boolean;
+  lastMessageAt?: string | null;
+  lead?: Lead | null;
+};
+
+export type Message = {
+  id: string;
+  direction: "INBOUND" | "OUTBOUND" | "INTERNAL" | "SYSTEM" | string;
+  body?: string | null;
+  createdAt: string;
+  aiGenerated?: boolean;
+};
+
 const API_BASE = import.meta.env.VITE_API_URL ?? "";
+
+export const emptyStats: StatMap = {
+  totalLeads: 0,
+  newToday: 0,
+  activeConversations: 0,
+  optIn: 0,
+  noOptIn: 0,
+  ageConfirmed: 0,
+  sentToday: 0,
+  receivedToday: 0,
+  aiToday: 0,
+  activeCampaigns: 0,
+  activeAutomations: 0,
+  purchasesToday: 0,
+  estimatedRevenue: 0,
+  stopLeads: 0,
+  failedMessages: 0
+};
 
 export function getToken() {
   return localStorage.getItem("crm_token") ?? "";
@@ -10,111 +61,18 @@ export function setToken(token: string) {
   localStorage.setItem("crm_token", token);
 }
 
-async function request<T>(path: string, init: RequestInit = {}, fallback?: T): Promise<T> {
-  try {
-    const response = await fetch(`${API_BASE}${path}`, {
-      ...init,
-      headers: {
-        "Content-Type": "application/json",
-        ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
-        ...(init.headers ?? {})
-      }
-    });
-    if (!response.ok) throw new Error(await response.text());
-    return (await response.json()) as T;
-  } catch (error) {
-    if (fallback !== undefined) return fallback;
-    throw error;
-  }
+async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(getToken() ? { Authorization: `Bearer ${getToken()}` } : {}),
+      ...(init.headers ?? {})
+    }
+  });
+  if (!response.ok) throw new Error(await response.text());
+  return (await response.json()) as T;
 }
-
-export const demoStats: StatMap = {
-  totalLeads: 128,
-  newToday: 12,
-  activeConversations: 34,
-  optIn: 88,
-  noOptIn: 40,
-  ageConfirmed: 61,
-  sentToday: 96,
-  receivedToday: 143,
-  aiToday: 27,
-  activeCampaigns: 2,
-  activeAutomations: 6,
-  purchasesToday: 5,
-  estimatedRevenue: 430,
-  stopLeads: 7,
-  failedMessages: 1
-};
-
-export const demoLeads = [
-  {
-    id: "lead_1",
-    name: "Valeria S.",
-    username: "vale_s",
-    status: "CALIENTE",
-    optInCommercial: true,
-    ageConfirmed: true,
-    followUpAllowed: true,
-    totalSpent: 120,
-    lastInboundMessage: "Me pasas precio?",
-    tags: [{ tag: { name: "precio", color: "#d97706" } }]
-  },
-  {
-    id: "lead_2",
-    name: "Marco R.",
-    username: "marco_r",
-    status: "INTERESADO",
-    optInCommercial: true,
-    ageConfirmed: false,
-    followUpAllowed: true,
-    totalSpent: 0,
-    lastInboundMessage: "Quiero info",
-    tags: [{ tag: { name: "revision", color: "#7c3aed" } }]
-  },
-  {
-    id: "lead_3",
-    name: "Dani",
-    username: "daniv",
-    status: "NO_VOLVER_A_ESCRIBIR",
-    optInCommercial: false,
-    ageConfirmed: false,
-    followUpAllowed: false,
-    totalSpent: 0,
-    lastInboundMessage: "No me escribas",
-    tags: []
-  }
-];
-
-export const demoConversations = [
-  {
-    id: "conv_1",
-    name: "Valeria S.",
-    type: "PRIVATE",
-    lastMessage: "Me pasas precio?",
-    unreadCount: 2,
-    responded: false,
-    conversationActive: true,
-    lastMessageAt: new Date().toISOString(),
-    lead: demoLeads[0]
-  },
-  {
-    id: "conv_2",
-    name: "Marco R.",
-    type: "PRIVATE",
-    lastMessage: "Quiero info",
-    unreadCount: 0,
-    responded: true,
-    conversationActive: true,
-    lastMessageAt: new Date(Date.now() - 3600_000).toISOString(),
-    lead: demoLeads[1]
-  }
-];
-
-export const demoMessages = [
-  { id: "m1", direction: "INBOUND", body: "Hola, quiero info", createdAt: new Date(Date.now() - 3600_000).toISOString() },
-  { id: "m2", direction: "OUTBOUND", body: "Hola :) antes de pasarte la info, me confirmas que eres mayor de edad?", createdAt: new Date(Date.now() - 3300_000).toISOString(), aiGenerated: true },
-  { id: "m3", direction: "INBOUND", body: "Si, soy mayor. Me pasas precio?", createdAt: new Date().toISOString() }
-];
 
 export const api = {
   login: (email: string, password: string) =>
@@ -122,18 +80,18 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ email, password })
     }),
-  dashboard: () => request<StatMap>("/api/dashboard", {}, demoStats),
-  leads: () => request<typeof demoLeads>("/api/leads", {}, demoLeads),
-  conversations: () => request<typeof demoConversations>("/api/conversations", {}, demoConversations),
-  messages: (conversationId: string) => request<typeof demoMessages>(`/api/conversations/${conversationId}/messages`, {}, demoMessages),
+  dashboard: () => request<StatMap>("/api/dashboard"),
+  leads: () => request<Lead[]>("/api/leads"),
+  conversations: () => request<Conversation[]>("/api/conversations"),
+  messages: (conversationId: string) => request<Message[]>(`/api/conversations/${conversationId}/messages`),
   sendMessage: (conversationId: string, text: string) =>
     request(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
-  telegramStatus: () => request<{ status: string; qrCodeDataUrl?: string | null; username?: string | null }>("/api/telegram/status", {}, { status: "DISCONNECTED" }),
-  startQr: () => request<{ status: string; qrCodeDataUrl?: string | null }>("/api/telegram/qr/start", { method: "POST" }, { status: "QR_PENDING" }),
-  campaigns: () => request<unknown[]>("/api/campaigns", {}, []),
-  automations: () => request<unknown[]>("/api/automations", {}, []),
-  templates: () => request<unknown[]>("/api/templates", {}, []),
-  media: () => request<unknown[]>("/api/media", {}, []),
-  purchases: () => request<unknown[]>("/api/purchases", {}, []),
-  aiConfig: () => request<Record<string, unknown>>("/api/ai/config", {}, { model: "gpt-4.1-mini", globalEnabled: false })
+  telegramStatus: () => request<{ status: string; qrCodeDataUrl?: string | null; username?: string | null }>("/api/telegram/status"),
+  startQr: () => request<{ status: string; qrCodeDataUrl?: string | null }>("/api/telegram/qr/start", { method: "POST" }),
+  campaigns: () => request<unknown[]>("/api/campaigns"),
+  automations: () => request<unknown[]>("/api/automations"),
+  templates: () => request<unknown[]>("/api/templates"),
+  media: () => request<unknown[]>("/api/media"),
+  purchases: () => request<unknown[]>("/api/purchases"),
+  aiConfig: () => request<Record<string, unknown>>("/api/ai/config")
 };
