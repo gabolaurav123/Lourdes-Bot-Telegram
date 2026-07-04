@@ -98,7 +98,7 @@ export type Purchase = {
   lead?: Lead;
 };
 
-export const API_BASE = import.meta.env.VITE_API_URL ?? "";
+export const API_BASE = (import.meta.env.VITE_API_URL ?? "").replace(/\/+$/, "");
 
 export const emptyStats: StatMap = {
   totalLeads: 0,
