@@ -51,6 +51,14 @@ export function createApp() {
   );
   app.use("/uploads", express.static(path.resolve(config.media.localDir)));
 
+  app.get("/", (_req, res) => {
+    res.json({
+      ok: true,
+      service: "telegram-consent-crm-api",
+      message: "API activa. Abre la URL del servicio WEB para usar el CRM.",
+      health: "/health"
+    });
+  });
   app.get("/health", (_req, res) => res.json({ ok: true }));
   app.use("/api/auth", authRouter);
 
