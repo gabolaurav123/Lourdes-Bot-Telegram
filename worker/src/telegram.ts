@@ -9,6 +9,33 @@ import { config } from "./config";
 import { decryptSecret } from "./crypto";
 
 let client: TelegramClient | undefined;
+type TelegramTarget = Parameters<TelegramClient["sendMessage"]>[0];
+const entityCache = new Map<string, TelegramTarget>();
+
+function telegramId(value: unknown) {
+  if (typeof value === "object" && value && "value" in value) {
+    return String((value as { value: unknown }).value);
+  }
+  return value === undefined || value === null ? "" : String(value);
+}
+
+async function resolveEntity(tg: TelegramClient, chatId: string) {
+  const cached = entityCache.get(chatId);
+  if (cached) return cached;
+
+  const dialogs = await tg.getDialogs({ limit: 5000 });
+  for (const dialog of dialogs as unknown as Array<{ id?: unknown; entity?: Record<string, unknown>; inputEntity?: unknown }>) {
+    const target = (dialog.inputEntity ?? dialog.entity) as TelegramTarget | undefined;
+    if (!target) continue;
+    for (const id of [telegramId(dialog.id), telegramId(dialog.entity?.id)].filter(Boolean)) {
+      entityCache.set(id, target);
+    }
+  }
+
+  const resolved = entityCache.get(chatId);
+  if (!resolved) throw new Error(`No se pudo resolver la entidad de Telegram para el chat ${chatId}`);
+  return resolved;
+}
 
 async function resolveMediaFile(media: { storage: string; filename: string; url: string; deletedAt: Date | null; content: Uint8Array | null }) {
   if (media.deletedAt) throw new Error("La imagen fue eliminada o ya expiro");
@@ -35,6 +62,7 @@ async function getClient() {
   client = new TelegramClient(new StringSession(saved), config.telegram.apiId, config.telegram.apiHash, {
     connectionRetries: 5
   });
+  entityCache.clear();
   await client.connect();
   if (!(await client.checkAuthorization())) throw new Error("Sesion de Telegram expirada");
   return client;
@@ -69,12 +97,13 @@ export async function sendToLead(input: {
   const conversation = await prisma.conversation.findUniqueOrThrow({ where: { telegramChatId: lead.telegramChatId } });
   const media = input.mediaAssetId ? await prisma.mediaAsset.findUniqueOrThrow({ where: { id: input.mediaAssetId } }) : null;
   const tg = await getClient();
+  const target = await resolveEntity(tg, lead.telegramChatId);
 
   if (media) {
     const file = await resolveMediaFile(media);
-    await tg.sendFile(lead.telegramChatId, { file, caption: input.text });
+    await tg.sendFile(target, { file, caption: input.text });
   } else {
-    await tg.sendMessage(lead.telegramChatId, { message: input.text ?? "" });
+    await tg.sendMessage(target, { message: input.text ?? "" });
   }
 
   await prisma.message.create({

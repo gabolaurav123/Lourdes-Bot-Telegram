@@ -21,7 +21,17 @@ type DialogLike = {
   title?: string;
   message?: { message?: string; date?: number; out?: boolean };
   entity?: Record<string, unknown>;
+  inputEntity?: unknown;
 };
+
+type TelegramTarget = Parameters<TelegramClient["sendMessage"]>[0];
+
+function telegramId(value: unknown) {
+  if (typeof value === "object" && value && "value" in value) {
+    return String((value as { value: unknown }).value);
+  }
+  return value === undefined || value === null ? "" : String(value);
+}
 
 type IncomingMediaRecord = {
   className?: string;
@@ -35,6 +45,7 @@ type IncomingMediaRecord = {
 class TelegramService {
   private client?: TelegramClient;
   private loginPromise?: Promise<unknown>;
+  private readonly entityCache = new Map<string, TelegramTarget>();
 
   private ensureConfig() {
     if (!config.telegram.apiId || !config.telegram.apiHash) {
@@ -268,6 +279,7 @@ class TelegramService {
     let count = 0;
 
     for (const dialog of dialogs) {
+      this.rememberDialogEntity(dialog);
       await this.upsertDialog(dialog);
       count += 1;
     }
@@ -296,6 +308,7 @@ class TelegramService {
     });
 
     const client = await this.requireClient();
+    const target = await this.resolveEntity(client, conversation.telegramChatId);
     const media = input.mediaAssetId
       ? await prisma.mediaAsset.findUniqueOrThrow({ where: { id: input.mediaAssetId } })
       : null;
@@ -311,13 +324,13 @@ class TelegramService {
           : media.storage === "local"
             ? path.resolve(config.media.localDir, media.filename)
             : media.url;
-        const sent = await client.sendFile(conversation.telegramChatId, {
+        const sent = await client.sendFile(target, {
           file,
           caption: input.text
         });
         telegramMessageId = String((sent as { id?: unknown }).id ?? "");
       } else {
-        const sent = await client.sendMessage(conversation.telegramChatId, {
+        const sent = await client.sendMessage(target, {
           message: input.text ?? ""
         });
         telegramMessageId = String((sent as { id?: unknown }).id ?? "");
@@ -398,7 +411,8 @@ class TelegramService {
     if (!Number.isInteger(telegramMessageId)) throw new Error("El ID del mensaje de Telegram no es valido");
 
     const client = await this.requireClient();
-    const remoteMessages = await client.getMessages(stored.conversation.telegramChatId, { ids: [telegramMessageId] });
+    const target = await this.resolveEntity(client, stored.conversation.telegramChatId);
+    const remoteMessages = await client.getMessages(target, { ids: [telegramMessageId] });
     const remoteMessage = remoteMessages[0];
     if (!remoteMessage) throw new Error("Telegram ya no devolvio el mensaje original");
 
@@ -619,12 +633,31 @@ class TelegramService {
     return lead;
   }
 
+  private rememberDialogEntity(dialog: DialogLike) {
+    const target = (dialog.inputEntity ?? dialog.entity) as TelegramTarget | undefined;
+    if (!target) return;
+    const ids = [telegramId(dialog.id), telegramId(dialog.entity?.id)].filter(Boolean);
+    for (const id of ids) this.entityCache.set(id, target);
+  }
+
+  private async resolveEntity(client: TelegramClient, chatId: string) {
+    const cached = this.entityCache.get(chatId);
+    if (cached) return cached;
+
+    const dialogs = (await client.getDialogs({ limit: 5000 })) as unknown as DialogLike[];
+    for (const dialog of dialogs) this.rememberDialogEntity(dialog);
+
+    const resolved = this.entityCache.get(chatId);
+    if (!resolved) {
+      throw new Error(`No se pudo resolver la entidad de Telegram para el chat ${chatId}. Sincroniza los chats e intenta otra vez.`);
+    }
+    return resolved;
+  }
+
   private async upsertDialog(dialog: DialogLike) {
     const entity = dialog.entity ?? {};
     const rawId = entity.id ?? dialog.id;
-    const telegramChatId = String(
-      typeof rawId === "object" && rawId && "value" in rawId ? (rawId as { value: unknown }).value : rawId
-    );
+    const telegramChatId = telegramId(rawId);
     if (!telegramChatId || telegramChatId === "undefined") return;
 
     const className = String(entity.className ?? "");
