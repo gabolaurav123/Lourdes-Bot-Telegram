@@ -23,7 +23,7 @@ async function resolveEntity(tg: TelegramClient, chatId: string) {
   const cached = entityCache.get(chatId);
   if (cached) return cached;
 
-  const dialogs = await tg.getDialogs({ limit: 5000 });
+  const dialogs = await tg.getDialogs({ limit: 1000 });
   for (const dialog of dialogs as unknown as Array<{ id?: unknown; entity?: Record<string, unknown>; inputEntity?: unknown }>) {
     const target = (dialog.inputEntity ?? dialog.entity) as TelegramTarget | undefined;
     if (!target) continue;
@@ -33,8 +33,15 @@ async function resolveEntity(tg: TelegramClient, chatId: string) {
   }
 
   const resolved = entityCache.get(chatId);
-  if (!resolved) throw new Error(`No se pudo resolver la entidad de Telegram para el chat ${chatId}`);
-  return resolved;
+  if (resolved) return resolved;
+
+  try {
+    const inputEntity = await tg.getInputEntity(BigInt(chatId) as never);
+    entityCache.set(chatId, inputEntity);
+    return inputEntity;
+  } catch {
+    throw new Error(`No se pudo resolver la entidad de Telegram para el chat ${chatId}`);
+  }
 }
 
 async function resolveMediaFile(media: { storage: string; filename: string; url: string; deletedAt: Date | null; content: Uint8Array | null }) {

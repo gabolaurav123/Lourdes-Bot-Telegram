@@ -644,14 +644,19 @@ class TelegramService {
     const cached = this.entityCache.get(chatId);
     if (cached) return cached;
 
-    const dialogs = (await client.getDialogs({ limit: 5000 })) as unknown as DialogLike[];
+    const dialogs = (await client.getDialogs({ limit: config.telegram.syncLimit })) as unknown as DialogLike[];
     for (const dialog of dialogs) this.rememberDialogEntity(dialog);
 
     const resolved = this.entityCache.get(chatId);
-    if (!resolved) {
+    if (resolved) return resolved;
+
+    try {
+      const inputEntity = await client.getInputEntity(BigInt(chatId) as never);
+      this.entityCache.set(chatId, inputEntity);
+      return inputEntity;
+    } catch {
       throw new Error(`No se pudo resolver la entidad de Telegram para el chat ${chatId}. Sincroniza los chats e intenta otra vez.`);
     }
-    return resolved;
   }
 
   private async upsertDialog(dialog: DialogLike) {
