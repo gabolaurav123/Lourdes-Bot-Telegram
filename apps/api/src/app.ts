@@ -24,6 +24,7 @@ import { prisma } from "./lib/prisma";
 
 export function createApp() {
   const app = express();
+  app.set("trust proxy", 1);
 
   app.use(helmet());
   app.use(
