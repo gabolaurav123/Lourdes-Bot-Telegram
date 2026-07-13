@@ -39,6 +39,8 @@ export type Message = {
   mediaAsset?: MediaAsset | null;
   createdAt: string;
   aiGenerated?: boolean;
+  status?: string;
+  error?: string | null;
 };
 
 export type Campaign = {
@@ -85,6 +87,8 @@ export type SystemStatus = {
     configured: boolean;
     enabled: boolean;
     model: string;
+    lastReplyAt?: string | null;
+    lastEvent?: { action: string; at: string; detail?: string } | null;
   };
 };
 
@@ -216,6 +220,8 @@ export const api = {
   messages: (conversationId: string) => request<Message[]>(`/api/conversations/${conversationId}/messages`),
   sendMessage: (conversationId: string, text?: string, mediaAssetId?: string, sensitive = false) =>
     request(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text: text || undefined, mediaAssetId, sensitive }) }),
+  retryMessageMedia: (conversationId: string, messageId: string) =>
+    request<{ ok: boolean; mediaAssetId: string }>(`/api/conversations/${conversationId}/messages/${messageId}/media/retry`, { method: "POST" }),
   telegramStatus: () => request<{ status: string; qrCodeDataUrl?: string | null; username?: string | null }>("/api/telegram/status"),
   startQr: () => request<{ status: string; qrCodeDataUrl?: string | null }>("/api/telegram/qr/start", { method: "POST" }),
   syncTelegram: (limit = 1000) => request<{ count: number }>("/api/telegram/sync", { method: "POST", body: JSON.stringify({ limit }) }),

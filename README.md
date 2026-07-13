@@ -198,19 +198,19 @@ Eso no conecta tu cuenta todavia. Solo autoriza a tu sistema a usar MTProto. Des
 
 ## Comprobar que el Worker funciona
 
-En `Campanas` y `Ajustes` aparece el estado del Worker. Debe indicar `Activo`. Si aparece `Apagado`, comprueba en Seenode que el servicio Worker tenga la misma `DATABASE_URL`, `ENCRYPTION_KEY`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` y `TELEGRAM_SESSION_LABEL` que la API.
+En `Campanas` y `Ajustes` aparece el estado del Worker. Debe indicar `Activo`. Si aparece `Apagado`, comprueba en Seenode que el servicio Worker tenga la misma `DATABASE_URL`, `ENCRYPTION_KEY`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` y `TELEGRAM_SESSION_LABEL` que la API. WEB, API y WORKER deben mostrar el mismo commit actual; un despliegue marcado como activo puede seguir ejecutando un commit antiguo.
 
 Las campanas muestran enviados, pendientes, fallidos y omitidos. Un envio fallido se reintenta hasta tres veces y el error exacto queda visible dentro de la campana.
 
 ## Configurar OpenAI
 
-Puedes configurar `OPENAI_API_KEY` y `OPENAI_MODEL` en el servicio API, o guardar la API key cifrada desde `Ajustes`. Usa `Probar conexion IA` antes de activar la IA global. La clave nunca se devuelve al navegador.
+Puedes configurar `OPENAI_API_KEY` y `OPENAI_MODEL` en el servicio API, o guardar la API key cifrada desde `Ajustes`. Usa `Probar conexion IA` y marca `IA global activa`. Cada lead tambien debe tener su IA activa. La clave nunca se devuelve al navegador y el Inbox muestra el estado real de la respuesta automatica.
 
 La integracion usa la Responses API de OpenAI. Las respuestas automaticas solo se generan para conversaciones entrantes validas y respetan stop, horario, palabras prohibidas y confirmacion de edad.
 
 ## Imagenes sin servicio adicional
 
-Con `MEDIA_STORAGE=database`, las imagenes se comprimen a WebP y se guardan en Neon PostgreSQL. API y Worker acceden al mismo archivo aunque sean servicios separados. Los archivos entrantes temporales se eliminan de la base de datos despues de 24 horas.
+Con `MEDIA_STORAGE=database`, las imagenes se comprimen a WebP y se guardan en Neon PostgreSQL. API y Worker acceden al mismo archivo aunque sean servicios separados. Los archivos entrantes temporales se eliminan de la base de datos despues de 24 horas. Si Telegram no descarga una imagen al primer intento, Inbox registra el error y permite recuperarla otra vez desde el mensaje original.
 
 ## Como conectar Telegram
 

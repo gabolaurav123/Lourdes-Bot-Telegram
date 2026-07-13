@@ -342,6 +342,26 @@ export function App() {
   }, [selectedConversation?.id]);
 
   useEffect(() => {
+    if (!tokenReady || section !== "inbox") return;
+    const conversationId = selectedConversation?.id;
+    const refreshInbox = async () => {
+      const [conversationItems, messageItems, currentSystemStatus] = await Promise.all([
+        api.conversations(),
+        conversationId ? api.messages(conversationId) : Promise.resolve([]),
+        api.systemStatus()
+      ]);
+      setConversations(conversationItems);
+      setMessages(messageItems);
+      setSystemStatus(currentSystemStatus);
+      setSelectedConversation((current) => current
+        ? conversationItems.find((conversation) => conversation.id === current.id) ?? conversationItems[0] ?? null
+        : conversationItems[0] ?? null);
+    };
+    const timer = window.setInterval(() => void refreshInbox().catch(() => undefined), 5_000);
+    return () => window.clearInterval(timer);
+  }, [section, selectedConversation?.id, tokenReady]);
+
+  useEffect(() => {
     if (!tokenReady || (section !== "campaigns" && section !== "settings")) return;
     const timer = window.setInterval(() => {
       void Promise.all([api.campaigns(), api.systemStatus()])
@@ -479,6 +499,7 @@ export function App() {
               messages={messages}
               composer={composer}
               setComposer={setComposer}
+              systemStatus={systemStatus}
                onSend={async (mediaAssetId, sensitive) => {
                  if ((!composer.trim() && !mediaAssetId) || !selectedConversation) return;
                  const text = composer.trim();
@@ -494,6 +515,11 @@ export function App() {
                onUpdateLead={async (leadId, payload) => {
                 await api.updateLead(leadId, payload);
                  await refreshLeadsAndConversations();
+               }}
+               onRetryMedia={async (messageId) => {
+                 if (!selectedConversation) return;
+                 await api.retryMessageMedia(selectedConversation.id, messageId);
+                 setMessages(await api.messages(selectedConversation.id));
                }}
                onError={setLoadError}
             />
@@ -654,8 +680,10 @@ function InboxView(props: {
   messages: Message[];
   composer: string;
   setComposer: (value: string) => void;
+  systemStatus: SystemStatus;
   onSend: (mediaAssetId?: string, sensitive?: boolean) => Promise<void>;
   onUpdateLead: (leadId: string, payload: Record<string, unknown>) => Promise<void>;
+  onRetryMedia: (messageId: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
   const lead = props.selected?.lead ?? null;
@@ -663,6 +691,13 @@ function InboxView(props: {
   const [attachedImage, setAttachedImage] = useState<MediaAsset | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [sensitiveMessage, setSensitiveMessage] = useState(false);
+  const aiStatus = !props.systemStatus.openai.configured
+    ? "IA sin API key"
+    : !props.systemStatus.openai.enabled
+      ? "IA global apagada"
+      : lead?.aiEnabled === false
+        ? "IA pausada en este chat"
+        : "IA automatica activa";
 
   useEffect(() => {
     setNoteDraft(lead?.notes ?? "");
@@ -732,9 +767,9 @@ function InboxView(props: {
       <section className="flex min-h-[640px] overflow-hidden rounded-lg border border-line bg-white shadow-soft xl:min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex h-14 items-center justify-between border-b border-line px-4">
-            <div>
+            <div className="min-w-0">
               <h2 className="text-sm font-semibold">{props.selected?.name ?? "Selecciona una conversacion"}</h2>
-              <p className="text-xs text-zinc-500">{lead?.status ?? "Sin lead"}</p>
+              <p className="truncate text-xs text-zinc-500">{lead?.status ?? "Sin lead"} - {aiStatus}</p>
             </div>
             {lead && (
               <button
@@ -752,10 +787,16 @@ function InboxView(props: {
               {props.messages.length === 0 && <p className="rounded-md bg-white px-3 py-2 text-sm text-zinc-500 shadow-sm">No hay mensajes guardados para esta conversacion.</p>}
               {props.messages.map((message) => (
                 <div key={message.id} className={clsx("max-w-[78%] rounded-lg px-3 py-2 text-sm shadow-sm", message.direction === "OUTBOUND" ? "ml-auto bg-pine text-white" : "bg-white text-ink")}>
-                  {message.mediaAsset && (
-                    <img src={mediaUrl(message.mediaAsset.url)} alt={message.mediaAsset.originalName} className="mb-2 max-h-64 rounded-md object-contain" />
-                  )}
-                  <p>{message.body || (message.mediaAsset ? "[imagen temporal]" : "[imagen]")}</p>
+                  <MessageMediaPreview message={message} onRetry={async () => {
+                    try {
+                      await props.onRetryMedia(message.id);
+                    } catch (error) {
+                      props.onError(messageFromError(error));
+                    }
+                  }} />
+                  {message.body && <p>{message.body}</p>}
+                  {!message.body && !message.mediaAsset && !message.error && <p>[imagen]</p>}
+                  {message.error && <p className={clsx("mt-1 text-xs", message.direction === "OUTBOUND" ? "text-white/80" : "text-coral")}>{message.error}</p>}
                   <div className={clsx("mt-1 flex items-center gap-1 text-[11px]", message.direction === "OUTBOUND" ? "text-white/70" : "text-zinc-400")}>
                     {message.aiGenerated && <WandSparkles size={12} />}
                     {new Date(message.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -839,6 +880,41 @@ function InboxView(props: {
         )}
       </section>
     </div>
+  );
+}
+
+function MessageMediaPreview({ message, onRetry }: { message: Message; onRetry: () => Promise<void> }) {
+  const [failed, setFailed] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const canRetry = message.direction === "INBOUND" && (!message.mediaAsset || failed);
+
+  async function retry() {
+    setRetrying(true);
+    try {
+      await onRetry();
+      setFailed(false);
+    } finally {
+      setRetrying(false);
+    }
+  }
+
+  return (
+    <>
+      {message.mediaAsset && !failed && (
+        <img
+          src={mediaUrl(message.mediaAsset.url)}
+          alt={message.mediaAsset.originalName}
+          className="mb-2 max-h-64 rounded-md object-contain"
+          onError={() => setFailed(true)}
+        />
+      )}
+      {failed && <p className="mb-2 text-xs text-coral">La imagen temporal no esta disponible.</p>}
+      {canRetry && (
+        <button type="button" className="mb-2 text-xs font-semibold underline disabled:opacity-50" disabled={retrying} onClick={() => void retry()}>
+          {retrying ? "Recuperando imagen..." : "Volver a cargar imagen"}
+        </button>
+      )}
+    </>
   );
 }
 
@@ -1068,6 +1144,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
         <div><span className="text-xs font-semibold uppercase text-zinc-500">Telegram</span><p className="mt-1 font-medium">{systemStatus.telegram.connected ? "Cuenta conectada" : `No conectado (${systemStatus.telegram.status})`}</p></div>
         <div><span className="text-xs font-semibold uppercase text-zinc-500">Ultimo proceso</span><p className="mt-1 font-medium">{systemStatus.worker.lastSuccessAt ? new Date(systemStatus.worker.lastSuccessAt).toLocaleString() : "Sin actividad registrada"}</p></div>
         {systemStatus.worker.lastError && <p className="md:col-span-3 text-coral">Error del worker: {systemStatus.worker.lastError}</p>}
+        {!systemStatus.worker.online && !systemStatus.worker.lastError && <p className="md:col-span-3 text-coral">El servicio Worker no ha enviado actividad. Debe desplegarse con la misma version del repositorio que la API y la Web.</p>}
       </div>
       <div className="grid gap-4 xl:grid-cols-[430px_1fr]">
       <form onSubmit={submit} className="order-2 rounded-lg border border-line bg-white p-4 shadow-soft xl:order-1">
@@ -1811,9 +1888,11 @@ function SettingsView(props: {
       <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
         <h2 className="text-sm font-semibold">Telegram</h2>
         <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-          <div className="rounded-md bg-panel p-2"><span className="text-zinc-500">Worker</span><p className="mt-1 font-semibold">{props.systemStatus.worker.online ? "Activo" : "Apagado"}</p></div>
-          <div className="rounded-md bg-panel p-2"><span className="text-zinc-500">IA</span><p className="mt-1 font-semibold">{props.systemStatus.openai.configured ? "Configurada" : "Sin API key"}</p></div>
+          <div className="rounded-md bg-panel p-2"><span className="text-zinc-500">Worker</span><p className="mt-1 font-semibold">{props.systemStatus.worker.online ? "Activo" : "Sin actividad"}</p></div>
+          <div className="rounded-md bg-panel p-2"><span className="text-zinc-500">IA</span><p className="mt-1 font-semibold">{!props.systemStatus.openai.configured ? "Sin API key" : props.systemStatus.openai.enabled ? "Automatica activa" : "Configurada, apagada"}</p></div>
         </div>
+        {!props.systemStatus.worker.online && <p className="mt-2 rounded-md bg-coral/10 px-3 py-2 text-xs text-coral">El Worker no esta ejecutando la misma version o no puede conectarse a Neon.</p>}
+        {props.systemStatus.openai.lastEvent?.detail && <p className="mt-2 rounded-md bg-panel px-3 py-2 text-xs text-zinc-600">Ultimo evento IA: {props.systemStatus.openai.lastEvent.detail}</p>}
         <div className="mt-4 grid h-44 place-items-center rounded-lg border border-dashed border-line bg-panel">
           {props.telegram.qrCodeDataUrl ? <img src={props.telegram.qrCodeDataUrl} alt="QR Telegram" className="h-40 w-40" /> : <QrCode size={48} className="text-zinc-400" />}
         </div>

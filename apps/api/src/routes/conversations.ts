@@ -70,3 +70,21 @@ conversationsRouter.post(
     res.json(conversation);
   })
 );
+
+conversationsRouter.post(
+  "/:id/messages/:messageId/media/retry",
+  asyncHandler(async (req, res) => {
+    const message = await prisma.message.findFirst({
+      where: { id: req.params.messageId, conversationId: req.params.id },
+      select: { id: true }
+    });
+    if (!message) {
+      res.status(404).json({ error: "Mensaje no encontrado en esta conversacion" });
+      return;
+    }
+
+    const result = await telegramService.retryIncomingMedia(message.id);
+    await auditLog(req, "INCOMING_MEDIA_RETRIED", { entityType: "Message", entityId: message.id });
+    res.json(result);
+  })
+);

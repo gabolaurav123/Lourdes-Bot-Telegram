@@ -23,6 +23,15 @@ type DialogLike = {
   entity?: Record<string, unknown>;
 };
 
+type IncomingMediaRecord = {
+  className?: string;
+  photo?: unknown;
+  document?: {
+    mimeType?: string;
+    attributes?: Array<{ fileName?: string }>;
+  };
+};
+
 class TelegramService {
   private client?: TelegramClient;
   private loginPromise?: Promise<unknown>;
@@ -376,6 +385,33 @@ class TelegramService {
     });
   }
 
+  async retryIncomingMedia(messageId: string) {
+    const stored = await prisma.message.findUniqueOrThrow({
+      where: { id: messageId },
+      include: { conversation: true }
+    });
+    if (stored.direction !== "INBOUND") throw new Error("Solo se pueden recuperar imagenes recibidas");
+    if (stored.mediaAssetId) return { ok: true, mediaAssetId: stored.mediaAssetId };
+    if (!stored.telegramMessageId) throw new Error("El mensaje no tiene un ID de Telegram para recuperar la imagen");
+
+    const telegramMessageId = Number(stored.telegramMessageId);
+    if (!Number.isInteger(telegramMessageId)) throw new Error("El ID del mensaje de Telegram no es valido");
+
+    const client = await this.requireClient();
+    const remoteMessages = await client.getMessages(stored.conversation.telegramChatId, { ids: [telegramMessageId] });
+    const remoteMessage = remoteMessages[0];
+    if (!remoteMessage) throw new Error("Telegram ya no devolvio el mensaje original");
+
+    const mediaAsset = await this.saveIncomingImage(client, remoteMessage as unknown as NewMessageEvent["message"]);
+    if (!mediaAsset) throw new Error("El mensaje no contiene una imagen compatible");
+
+    await prisma.message.update({
+      where: { id: stored.id },
+      data: { mediaAssetId: mediaAsset.id, error: null }
+    });
+    return { ok: true, mediaAssetId: mediaAsset.id };
+  }
+
   private attachIncomingHandler(client: TelegramClient) {
     client.addEventHandler((event) => {
       void this.handleIncoming(event as NewMessageEvent).catch(async (error) => {
@@ -399,11 +435,29 @@ class TelegramService {
 
     const text = sanitizeText(message.message ?? "");
     const activeClient = await this.requireClient();
-    const mediaAsset = await this.saveIncomingImage(activeClient, message).catch(() => null);
+    const expectsImage = this.isIncomingImage(message);
+    let mediaAsset: Awaited<ReturnType<typeof mediaService.saveBuffer>> | null = null;
+    let mediaError: string | undefined;
+    if (expectsImage) {
+      try {
+        mediaAsset = await this.saveIncomingImage(activeClient, message);
+        if (!mediaAsset) mediaError = "Telegram no devolvio datos de la imagen";
+      } catch (error) {
+        mediaError = error instanceof Error ? error.message : String(error);
+        await prisma.auditLog.create({
+          data: {
+            action: "INCOMING_MEDIA_FAILED",
+            entityType: "TelegramMessage",
+            entityId: String(message.id),
+            metadata: { chatId, error: mediaError }
+          }
+        }).catch(() => undefined);
+      }
+    }
     const conversation = await prisma.conversation.upsert({
       where: { telegramChatId: chatId },
       update: {
-        lastMessage: text || (mediaAsset ? "[imagen]" : "[media]"),
+        lastMessage: text || (expectsImage ? "[imagen]" : "[media]"),
         lastMessageAt: new Date(),
         unreadCount: { increment: 1 },
         userWroteFirst: true,
@@ -413,7 +467,7 @@ class TelegramService {
         telegramChatId: chatId,
         name: chatId,
         type: "PRIVATE",
-        lastMessage: text || (mediaAsset ? "[imagen]" : "[media]"),
+        lastMessage: text || (expectsImage ? "[imagen]" : "[media]"),
         lastMessageAt: new Date(),
         unreadCount: 1,
         userWroteFirst: true,
@@ -433,6 +487,7 @@ class TelegramService {
         status: "RECEIVED",
         body: text,
         mediaAssetId: mediaAsset?.id,
+        error: mediaError,
         receivedAt: new Date()
       }
     });
@@ -451,12 +506,29 @@ class TelegramService {
     const updatedLead = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
     try {
       const aiReply = await aiService.generateReply(updatedLead, conversation, text);
-      if (aiReply) {
+      if (aiReply.text) {
         await this.sendMessageFromPanel({
           conversationId: conversation.id,
-          text: aiReply,
+          text: aiReply.text,
           aiGenerated: true,
           intent: "ai_reply"
+        });
+        await prisma.auditLog.create({
+          data: {
+            action: "AI_REPLY_SENT",
+            entityType: "Lead",
+            entityId: updatedLead.id,
+            metadata: { conversationId: conversation.id }
+          }
+        });
+      } else {
+        await prisma.auditLog.create({
+          data: {
+            action: "AI_REPLY_SKIPPED",
+            entityType: "Lead",
+            entityId: updatedLead.id,
+            metadata: { conversationId: conversation.id, reason: aiReply.reason ?? "Sin respuesta" }
+          }
         });
       }
     } catch (error) {
@@ -472,24 +544,35 @@ class TelegramService {
     }
   }
 
+  private isIncomingImage(message: NewMessageEvent["message"]) {
+    const media = (message as unknown as { media?: unknown }).media;
+    if (!media) return false;
+
+    const mediaRecord = media as IncomingMediaRecord;
+    const mimeType = mediaRecord.document?.mimeType ?? "";
+    return Boolean(
+      mimeType.startsWith("image/") ||
+      String(mediaRecord.className ?? "").includes("Photo") ||
+      mediaRecord.photo
+    );
+  }
+
   private async saveIncomingImage(client: TelegramClient, message: NewMessageEvent["message"]) {
     const media = (message as unknown as { media?: unknown }).media;
     if (!media) return null;
 
-    const mediaRecord = media as {
-      className?: string;
-      photo?: unknown;
-      document?: {
-        mimeType?: string;
-        attributes?: Array<{ fileName?: string }>;
-      };
-    };
+    const mediaRecord = media as IncomingMediaRecord;
     const mimeType = mediaRecord.document?.mimeType ?? (String(mediaRecord.className ?? "").includes("Photo") || mediaRecord.photo ? "image/jpeg" : "");
     if (!["image/jpeg", "image/png", "image/webp"].includes(mimeType)) return null;
 
-    const downloaded = await (client as unknown as {
-      downloadMedia: (media: unknown, options?: Record<string, unknown>) => Promise<Buffer | Uint8Array | string | undefined>;
-    }).downloadMedia(media, {});
+    const messageWithDownload = message as unknown as {
+      downloadMedia?: (options?: Record<string, unknown>) => Promise<Buffer | Uint8Array | string | undefined>;
+    };
+    const downloaded = messageWithDownload.downloadMedia
+      ? await messageWithDownload.downloadMedia({})
+      : await (client as unknown as {
+          downloadMedia: (media: unknown, options?: Record<string, unknown>) => Promise<Buffer | Uint8Array | string | undefined>;
+        }).downloadMedia(message, {});
     if (!downloaded || typeof downloaded === "string") return null;
 
     const buffer = Buffer.isBuffer(downloaded) ? downloaded : Buffer.from(downloaded);

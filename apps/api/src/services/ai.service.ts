@@ -8,6 +8,11 @@ import { prisma } from "../lib/prisma";
 
 type AllowedHours = { start?: string; end?: string; timezone?: string };
 
+export type AiReplyResult = {
+  text: string | null;
+  reason?: string;
+};
+
 function isWithinAllowedHours(value: unknown) {
   const allowed = (value ?? {}) as AllowedHours;
   if (!allowed.start || !allowed.end) return true;
@@ -84,11 +89,12 @@ class AiService {
     });
   }
 
-  async generateReply(lead: Lead, conversation: Conversation, inboundText: string) {
+  async generateReply(lead: Lead, conversation: Conversation, inboundText: string): Promise<AiReplyResult> {
     const aiConfig = await this.getConfig();
-    if (!aiConfig.globalEnabled || !lead.aiEnabled) return null;
-    if (containsStopPhrase(inboundText)) return null;
-    if (!isWithinAllowedHours(aiConfig.allowedHours)) return null;
+    if (!aiConfig.globalEnabled) return { text: null, reason: "La IA global esta apagada" };
+    if (!lead.aiEnabled) return { text: null, reason: "La IA esta pausada para este lead" };
+    if (containsStopPhrase(inboundText)) return { text: null, reason: "El usuario solicito detener los mensajes" };
+    if (!isWithinAllowedHours(aiConfig.allowedHours)) return { text: null, reason: "Fuera del horario permitido para la IA" };
 
     const permission = canMessageLead(
       {
@@ -101,10 +107,10 @@ class AiService {
       },
       "ai_reply"
     );
-    if (!permission.allowed) return null;
+    if (!permission.allowed) return { text: null, reason: permission.reasons.join(". ") };
 
     const apiKey = decryptSecret(aiConfig.encryptedApiKey) || config.openai.apiKey;
-    if (!apiKey) return null;
+    if (!apiKey) return { text: null, reason: "No hay una API key de OpenAI configurada" };
 
     const history = await prisma.message.findMany({
       where: { conversationId: conversation.id },
@@ -149,14 +155,14 @@ class AiService {
     const response = await this.clientFor(apiKey).responses.create(request);
 
     const text = response.output_text?.trim();
-    if (!text) return null;
+    if (!text) return { text: null, reason: "OpenAI devolvio una respuesta vacia" };
 
     const lower = text.toLowerCase();
     if (aiConfig.forbiddenWords.some((word) => lower.includes(word.toLowerCase()))) {
-      return "Prefiero confirmarte eso manualmente para darte la informacion correcta.";
+      return { text: "Prefiero confirmarte eso manualmente para darte la informacion correcta." };
     }
 
-    return text.slice(0, aiConfig.maxChars);
+    return { text: text.slice(0, aiConfig.maxChars) };
   }
 
   async testConnection() {

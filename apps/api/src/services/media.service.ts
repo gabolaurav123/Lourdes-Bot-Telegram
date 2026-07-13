@@ -39,8 +39,9 @@ class MediaService {
     }
 
     const maxBytes = config.media.maxMb * 1024 * 1024;
-    if ((input.size ?? input.buffer.length) > maxBytes) {
-      const error = new Error(`Imagen demasiado grande. Maximo ${config.media.maxMb} MB.`);
+    const maxInputBytes = input.temporary ? Math.max(maxBytes, 32 * 1024 * 1024) : maxBytes;
+    if ((input.size ?? input.buffer.length) > maxInputBytes) {
+      const error = new Error(`Imagen demasiado grande. Maximo ${Math.round(maxInputBytes / 1024 / 1024)} MB.`);
       (error as Error & { status?: number }).status = 400;
       throw error;
     }
@@ -51,6 +52,12 @@ class MediaService {
       .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
       .webp({ quality: (input.size ?? input.buffer.length) > 1_500_000 ? 78 : 88 })
       .toBuffer();
+
+    if (output.length > maxBytes) {
+      const error = new Error(`La imagen comprimida supera el maximo de ${config.media.maxMb} MB.`);
+      (error as Error & { status?: number }).status = 400;
+      throw error;
+    }
 
     const key = `${uuid()}.webp`;
     const checksum = sha256(output);

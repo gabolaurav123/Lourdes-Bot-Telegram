@@ -11,10 +11,19 @@ type StoredWorkerStatus = {
 
 class SystemService {
   async status() {
-    const [workerSetting, telegram, aiConfig] = await Promise.all([
+    const [workerSetting, telegram, aiConfig, lastAiEvent, lastAiReply] = await Promise.all([
       prisma.setting.findUnique({ where: { key: "worker:status" } }),
       prisma.telegramSession.findUnique({ where: { label: config.telegram.sessionLabel } }),
-      prisma.aiConfig.findUnique({ where: { id: "default" } })
+      prisma.aiConfig.findUnique({ where: { id: "default" } }),
+      prisma.auditLog.findFirst({
+        where: { action: { in: ["AI_REPLY_SENT", "AI_REPLY_SKIPPED", "AI_REPLY_FAILED"] } },
+        orderBy: { createdAt: "desc" }
+      }),
+      prisma.message.findFirst({
+        where: { aiGenerated: true, status: "SENT" },
+        orderBy: { sentAt: "desc" },
+        select: { sentAt: true }
+      })
     ]);
 
     const worker = (workerSetting?.value ?? {}) as StoredWorkerStatus;
@@ -39,7 +48,17 @@ class SystemService {
       openai: {
         configured: Boolean(aiConfig?.encryptedApiKey || config.openai.apiKey),
         enabled: aiConfig?.globalEnabled ?? false,
-        model: aiConfig?.model ?? config.openai.model
+        model: aiConfig?.model ?? config.openai.model,
+        lastReplyAt: lastAiReply?.sentAt ?? null,
+        lastEvent: lastAiEvent
+          ? {
+              action: lastAiEvent.action,
+              at: lastAiEvent.createdAt,
+              detail: typeof lastAiEvent.metadata === "object" && lastAiEvent.metadata
+                ? String((lastAiEvent.metadata as Record<string, unknown>).error ?? (lastAiEvent.metadata as Record<string, unknown>).reason ?? "")
+                : ""
+            }
+          : null
       }
     };
   }
