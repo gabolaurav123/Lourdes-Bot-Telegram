@@ -6,6 +6,23 @@ import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { toInputJson } from "../lib/json";
 import { prisma } from "../lib/prisma";
 
+type AllowedHours = { start?: string; end?: string; timezone?: string };
+
+function isWithinAllowedHours(value: unknown) {
+  const allowed = (value ?? {}) as AllowedHours;
+  if (!allowed.start || !allowed.end) return true;
+
+  const formatter = new Intl.DateTimeFormat("en-GB", {
+    timeZone: allowed.timezone || "America/La_Paz",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  });
+  const current = formatter.format(new Date());
+  if (allowed.start <= allowed.end) return current >= allowed.start && current <= allowed.end;
+  return current >= allowed.start || current <= allowed.end;
+}
+
 class AiService {
   private clientFor(apiKey: string) {
     return new OpenAI({ apiKey });
@@ -36,13 +53,14 @@ class AiService {
     forbiddenWords?: string[];
     globalEnabled?: boolean;
   }) {
+    const apiKey = input.apiKey?.trim();
     return prisma.aiConfig.upsert({
       where: { id: "default" },
       create: {
         id: "default",
         model: input.model ?? config.openai.model,
         promptBase: input.promptBase ?? DEFAULT_AI_PROMPT,
-        encryptedApiKey: input.apiKey ? encryptSecret(input.apiKey) : undefined,
+        encryptedApiKey: apiKey ? encryptSecret(apiKey) : undefined,
         temperature: input.temperature ?? 0.4,
         maxTokens: input.maxTokens ?? 400,
         tone: input.tone ?? "calido, breve y natural",
@@ -54,7 +72,7 @@ class AiService {
       update: {
         model: input.model,
         promptBase: input.promptBase,
-        encryptedApiKey: input.apiKey ? encryptSecret(input.apiKey) : undefined,
+        encryptedApiKey: apiKey ? encryptSecret(apiKey) : undefined,
         temperature: input.temperature,
         maxTokens: input.maxTokens,
         tone: input.tone,
@@ -70,6 +88,7 @@ class AiService {
     const aiConfig = await this.getConfig();
     if (!aiConfig.globalEnabled || !lead.aiEnabled) return null;
     if (containsStopPhrase(inboundText)) return null;
+    if (!isWithinAllowedHours(aiConfig.allowedHours)) return null;
 
     const permission = canMessageLead(
       {
@@ -101,8 +120,7 @@ class AiService {
       forbidden ? `Palabras prohibidas: ${forbidden}` : ""
     ].filter(Boolean).join("\n");
 
-    const messages: OpenAI.Chat.Completions.ChatCompletionMessageParam[] = [
-      { role: "system", content: system },
+    const input: OpenAI.Responses.ResponseInput = [
       {
         role: "user",
         content: `Datos del lead: nombre=${lead.name}, username=${lead.username ?? ""}, estado=${lead.status}, optIn=${lead.optInCommercial}, mayorEdad=${lead.ageConfirmed}, seguimiento=${lead.followUpAllowed}.`
@@ -110,18 +128,27 @@ class AiService {
       ...history.reverse().map((message) => ({
         role: message.direction === "INBOUND" ? "user" as const : "assistant" as const,
         content: message.body ?? "[imagen]"
-      })),
-      { role: "user", content: inboundText }
+      }))
     ];
 
-    const response = await this.clientFor(apiKey).chat.completions.create({
-      model: aiConfig.model,
-      temperature: aiConfig.temperature,
-      max_tokens: aiConfig.maxTokens,
-      messages
-    });
+    if (!input.length || history.length === 0) {
+      input.push({ role: "user", content: inboundText });
+    }
 
-    const text = response.choices[0]?.message?.content?.trim();
+    const request: OpenAI.Responses.ResponseCreateParamsNonStreaming = {
+      model: aiConfig.model,
+      instructions: system,
+      input,
+      max_output_tokens: aiConfig.maxTokens,
+      store: false
+    };
+    if (!aiConfig.model.startsWith("gpt-5") && !aiConfig.model.startsWith("o")) {
+      request.temperature = aiConfig.temperature;
+    }
+
+    const response = await this.clientFor(apiKey).responses.create(request);
+
+    const text = response.output_text?.trim();
     if (!text) return null;
 
     const lower = text.toLowerCase();
@@ -130,6 +157,30 @@ class AiService {
     }
 
     return text.slice(0, aiConfig.maxChars);
+  }
+
+  async testConnection() {
+    const aiConfig = await this.getConfig();
+    const apiKey = decryptSecret(aiConfig.encryptedApiKey) || config.openai.apiKey;
+    if (!apiKey) {
+      const error = new Error("No hay una API key de OpenAI configurada.");
+      (error as Error & { status?: number }).status = 400;
+      throw error;
+    }
+
+    const response = await this.clientFor(apiKey).responses.create({
+      model: aiConfig.model,
+      instructions: "Eres una prueba tecnica. Responde de forma muy breve.",
+      input: "Responde exactamente: CONEXION_OK",
+      max_output_tokens: 30,
+      store: false
+    });
+
+    return {
+      ok: true,
+      model: aiConfig.model,
+      response: response.output_text?.trim() || "Respuesta recibida sin texto"
+    };
   }
 }
 

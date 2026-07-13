@@ -6,6 +6,7 @@ import { auditLog } from "../lib/audit";
 import { sanitizeText } from "../lib/sanitize";
 import { telegramService } from "../services/telegram.service";
 import type { AuthenticatedRequest } from "../middleware/auth";
+import { safeMediaSelect } from "../lib/media";
 
 export const conversationsRouter = Router();
 
@@ -36,7 +37,7 @@ conversationsRouter.get(
   asyncHandler(async (req, res) => {
     const messages = await prisma.message.findMany({
       where: { conversationId: req.params.id },
-      include: { mediaAsset: true, sentBy: { select: { id: true, email: true, role: true } } },
+      include: { mediaAsset: { select: safeMediaSelect }, sentBy: { select: { id: true, email: true, role: true } } },
       orderBy: { createdAt: "asc" },
       take: Number(req.query.limit ?? 200)
     });

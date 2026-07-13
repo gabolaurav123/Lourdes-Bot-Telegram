@@ -56,17 +56,21 @@ class MediaService {
     const checksum = sha256(output);
     const storage = config.media.storage;
     let url: string;
+    let content: Uint8Array<ArrayBuffer> | undefined;
 
     if (storage === "s3") {
       await this.putS3(key, output, "image/webp");
       url = `${config.media.s3Endpoint?.replace(/\/$/, "")}/${config.media.s3Bucket}/${key}`;
-    } else {
+    } else if (storage === "local") {
       await fs.mkdir(path.resolve(config.media.localDir), { recursive: true });
       await fs.writeFile(path.resolve(config.media.localDir, key), output);
-      url = `/uploads/${key}`;
+      url = `${config.apiUrl}/uploads/${key}`;
+    } else {
+      content = new Uint8Array(output);
+      url = `${config.apiUrl}/media/${key}`;
     }
 
-    return prisma.mediaAsset.create({
+    const asset = await prisma.mediaAsset.create({
       data: {
         key,
         url,
@@ -78,10 +82,13 @@ class MediaService {
         width: metadata.width,
         height: metadata.height,
         checksum,
+        content,
         temporary: input.temporary ?? false,
         expiresAt: input.temporary ? new Date(Date.now() + (input.ttlHours ?? 24) * 60 * 60 * 1000) : undefined
       }
     });
+    const { content: _content, ...safeAsset } = asset;
+    return safeAsset;
   }
 
   private async putS3(key: string, body: Buffer, contentType: string) {
@@ -111,7 +118,9 @@ class MediaService {
   async remove(id: string) {
     const asset = await prisma.mediaAsset.findUniqueOrThrow({ where: { id } });
     await this.deleteStoredFile(asset);
-    return prisma.mediaAsset.update({ where: { id }, data: { deletedAt: new Date() } });
+    const updated = await prisma.mediaAsset.update({ where: { id }, data: { deletedAt: new Date(), content: null } });
+    const { content: _content, ...safeAsset } = updated;
+    return safeAsset;
   }
 
   async cleanupExpiredTemporary() {
@@ -128,7 +137,7 @@ class MediaService {
       await this.deleteStoredFile(asset).catch(() => undefined);
       await prisma.mediaAsset.update({
         where: { id: asset.id },
-        data: { deletedAt: new Date() }
+        data: { deletedAt: new Date(), content: null }
       });
     }
 
@@ -136,6 +145,7 @@ class MediaService {
   }
 
   private async deleteStoredFile(asset: { storage: string; filename: string; key: string }) {
+    if (asset.storage === "database") return;
     if (asset.storage === "s3") {
       if (!config.media.s3Bucket) return;
       this.s3 ??= new S3Client({

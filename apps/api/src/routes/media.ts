@@ -5,6 +5,7 @@ import { asyncHandler } from "../lib/async";
 import { auditLog } from "../lib/audit";
 import { mediaService } from "../services/media.service";
 import { config } from "../config";
+import { safeMediaSelect } from "../lib/media";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -16,7 +17,7 @@ export const mediaRouter = Router();
 mediaRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(await prisma.mediaAsset.findMany({ where: { deletedAt: null, temporary: false }, orderBy: { createdAt: "desc" } }));
+    res.json(await prisma.mediaAsset.findMany({ where: { deletedAt: null, temporary: false }, select: safeMediaSelect, orderBy: { createdAt: "desc" } }));
   })
 );
 

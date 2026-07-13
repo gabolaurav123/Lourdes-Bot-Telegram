@@ -1,25 +1,35 @@
 import "dotenv/config";
 import { pollAutomations } from "./processors/automations";
 import { pollCampaigns } from "./processors/campaigns";
-import { cleanupTemporaryMedia } from "./processors/media";
+import { config, workerConfigurationError } from "./config";
+import { writeWorkerStatus } from "./status";
 
 let running = false;
+let lastSuccessAt: string | undefined;
 
 async function tick() {
   if (running) return;
   running = true;
   try {
+    const configurationError = workerConfigurationError();
+    if (configurationError) throw new Error(configurationError);
     await pollAutomations();
     await pollCampaigns();
-    await cleanupTemporaryMedia();
+    lastSuccessAt = new Date().toISOString();
+    await writeWorkerStatus({ state: "RUNNING", lastSuccessAt, lastError: null });
   } catch (error) {
-    console.error("Worker tick failed:", error instanceof Error ? error.message : error);
+    const message = error instanceof Error ? error.message : String(error);
+    console.error("Worker tick failed:", message);
+    await writeWorkerStatus({ state: "ERROR", lastSuccessAt, lastError: message }).catch(() => undefined);
   } finally {
     running = false;
   }
 }
 
+await writeWorkerStatus({ state: "STARTING", lastError: null }).catch((error) => {
+  console.error("Worker heartbeat failed:", error instanceof Error ? error.message : error);
+});
 void tick();
-setInterval(() => void tick(), Number(process.env.WORKER_POLL_INTERVAL_MS ?? 10_000));
+setInterval(() => void tick(), config.pollIntervalMs);
 
 console.log("CRM worker running with PostgreSQL polling");

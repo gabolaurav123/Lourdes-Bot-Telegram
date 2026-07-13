@@ -1,6 +1,7 @@
 import path from "node:path";
 import QRCode from "qrcode";
 import { Api, TelegramClient } from "telegram";
+import { CustomFile } from "telegram/client/uploads";
 import { NewMessage, type NewMessageEvent } from "telegram/events";
 import { StringSession } from "telegram/sessions";
 import type { ConversationType, Lead, MessageStatus } from "@prisma/client";
@@ -296,7 +297,11 @@ class TelegramService {
 
     try {
       if (media) {
-        const file = media.storage === "local" ? path.resolve(config.media.localDir, media.filename) : media.url;
+        const file = media.content
+          ? new CustomFile(media.filename, media.content.length, "", Buffer.from(media.content))
+          : media.storage === "local"
+            ? path.resolve(config.media.localDir, media.filename)
+            : media.url;
         const sent = await client.sendFile(conversation.telegramChatId, {
           file,
           caption: input.text
@@ -372,7 +377,19 @@ class TelegramService {
   }
 
   private attachIncomingHandler(client: TelegramClient) {
-    client.addEventHandler((event) => this.handleIncoming(event as NewMessageEvent), new NewMessage({ incoming: true }));
+    client.addEventHandler((event) => {
+      void this.handleIncoming(event as NewMessageEvent).catch(async (error) => {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error("Incoming Telegram message failed:", message);
+        await prisma.auditLog.create({
+          data: {
+            action: "INCOMING_MESSAGE_PROCESSING_FAILED",
+            entityType: "TelegramSession",
+            metadata: { error: message }
+          }
+        }).catch(() => undefined);
+      });
+    }, new NewMessage({ incoming: true }));
   }
 
   private async handleIncoming(event: NewMessageEvent) {
@@ -432,13 +449,25 @@ class TelegramService {
     await automationService.scheduleForTrigger("NEW_MESSAGE_RECEIVED", lead.id, { text });
 
     const updatedLead = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
-    const aiReply = await aiService.generateReply(updatedLead, conversation, text);
-    if (aiReply) {
-      await this.sendMessageFromPanel({
-        conversationId: conversation.id,
-        text: aiReply,
-        aiGenerated: true,
-        intent: "ai_reply"
+    try {
+      const aiReply = await aiService.generateReply(updatedLead, conversation, text);
+      if (aiReply) {
+        await this.sendMessageFromPanel({
+          conversationId: conversation.id,
+          text: aiReply,
+          aiGenerated: true,
+          intent: "ai_reply"
+        });
+      }
+    } catch (error) {
+      const errorText = error instanceof Error ? error.message : String(error);
+      await prisma.auditLog.create({
+        data: {
+          action: "AI_REPLY_FAILED",
+          entityType: "Lead",
+          entityId: updatedLead.id,
+          metadata: { conversationId: conversation.id, error: errorText }
+        }
       });
     }
   }
@@ -543,8 +572,8 @@ class TelegramService {
           phone: typeof entity.phone === "string" ? entity.phone : undefined,
           lastInboundMessage: userWroteFirst ? lastMessage : undefined,
           lastInteractionAt: lastMessageAt,
-          userWroteFirst,
-          conversationActive: userWroteFirst
+          userWroteFirst: userWroteFirst ? true : undefined,
+          conversationActive: userWroteFirst ? true : undefined
         },
         create: {
           telegramChatId,
@@ -570,8 +599,8 @@ class TelegramService {
         type,
         lastMessage,
         lastMessageAt,
-        userWroteFirst,
-        conversationActive: userWroteFirst,
+        userWroteFirst: userWroteFirst ? true : undefined,
+        conversationActive: userWroteFirst ? true : undefined,
         leadId
       },
       create: {

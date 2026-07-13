@@ -1,6 +1,6 @@
 # Telegram Consent CRM
 
-CRM web para operar una cuenta personal de Telegram como inbox comercial con consentimiento, trazabilidad y controles de seguridad. Incluye React + Vite + TailwindCSS, API Node/Express, Prisma/PostgreSQL, worker con polling en base de datos, GramJS, OpenAI y almacenamiento local/S3-compatible para imagenes.
+CRM web para operar una cuenta personal de Telegram como inbox comercial con consentimiento, trazabilidad y controles de seguridad. Incluye React + Vite + TailwindCSS, API Node/Express, Prisma/PostgreSQL, worker con polling en base de datos, GramJS, OpenAI e imagenes comprimidas almacenadas en PostgreSQL por defecto.
 
 ## Como se despliega
 
@@ -147,7 +147,7 @@ TELEGRAM_SESSION_LABEL=primary
 OPENAI_API_KEY=tu_openai_key
 OPENAI_MODEL=gpt-4.1-mini
 
-MEDIA_STORAGE=local
+MEDIA_STORAGE=database
 MEDIA_LOCAL_DIR=storage/media
 MEDIA_MAX_MB=8
 
@@ -169,11 +169,15 @@ VITE_API_URL=https://TU-API.seenode.app
 NODE_ENV=production
 DATABASE_URL=postgresql://USUARIO:PASSWORD@HOST:PUERTO/DB?schema=public
 ENCRYPTION_KEY=la-misma-del-api
+API_URL=https://TU-API.seenode.app
 TELEGRAM_API_ID=123456
 TELEGRAM_API_HASH=tu_api_hash
 TELEGRAM_SESSION_LABEL=primary
 MEDIA_LOCAL_DIR=storage/media
 WORKER_POLL_INTERVAL_MS=10000
+WORKER_MAX_SEND_ATTEMPTS=3
+WORKER_PROCESSING_LOCK_MS=300000
+DEFAULT_TIMEZONE=America/La_Paz
 ```
 
 ## Donde conseguir Telegram API ID y API HASH
@@ -191,6 +195,22 @@ api_hash    -> TELEGRAM_API_HASH
 ```
 
 Eso no conecta tu cuenta todavia. Solo autoriza a tu sistema a usar MTProto. Despues, desde la web del CRM, vas a `Ajustes > Telegram > Generar QR` y escaneas el QR con Telegram movil.
+
+## Comprobar que el Worker funciona
+
+En `Campanas` y `Ajustes` aparece el estado del Worker. Debe indicar `Activo`. Si aparece `Apagado`, comprueba en Seenode que el servicio Worker tenga la misma `DATABASE_URL`, `ENCRYPTION_KEY`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH` y `TELEGRAM_SESSION_LABEL` que la API.
+
+Las campanas muestran enviados, pendientes, fallidos y omitidos. Un envio fallido se reintenta hasta tres veces y el error exacto queda visible dentro de la campana.
+
+## Configurar OpenAI
+
+Puedes configurar `OPENAI_API_KEY` y `OPENAI_MODEL` en el servicio API, o guardar la API key cifrada desde `Ajustes`. Usa `Probar conexion IA` antes de activar la IA global. La clave nunca se devuelve al navegador.
+
+La integracion usa la Responses API de OpenAI. Las respuestas automaticas solo se generan para conversaciones entrantes validas y respetan stop, horario, palabras prohibidas y confirmacion de edad.
+
+## Imagenes sin servicio adicional
+
+Con `MEDIA_STORAGE=database`, las imagenes se comprimen a WebP y se guardan en Neon PostgreSQL. API y Worker acceden al mismo archivo aunque sean servicios separados. Los archivos entrantes temporales se eliminan de la base de datos despues de 24 horas.
 
 ## Como conectar Telegram
 

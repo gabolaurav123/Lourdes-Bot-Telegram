@@ -50,6 +50,7 @@ import {
   type Message,
   type Purchase,
   type StatMap,
+  type SystemStatus,
   type Template
 } from "./lib/api";
 import { StatCard } from "./components/StatCard";
@@ -66,6 +67,14 @@ type AiConfig = Record<string, unknown> & {
   maxChars?: number;
   globalEnabled?: boolean;
   encryptedApiKey?: boolean;
+  allowedHours?: { start?: string; end?: string; timezone?: string };
+  forbiddenWords?: string[];
+};
+
+const emptySystemStatus: SystemStatus = {
+  worker: { online: false, state: "OFFLINE" },
+  telegram: { configured: false, connected: false, status: "DISCONNECTED" },
+  openai: { configured: false, enabled: false, model: "gpt-4.1-mini" }
 };
 
 const sections: { id: Section; label: string; icon: IconType }[] = [
@@ -157,6 +166,12 @@ function formatMoney(value: number | string | undefined) {
   return Number.isFinite(number) ? `$${number.toFixed(2)}` : "$0.00";
 }
 
+function toLocalDateTimeInput(value?: string | null) {
+  if (!value) return "";
+  const date = new Date(value);
+  return new Date(date.getTime() - date.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
+}
+
 function sleep(ms: number) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
@@ -180,6 +195,8 @@ export function App() {
   const [composer, setComposer] = useState("");
   const [search, setSearch] = useState("");
   const [loadError, setLoadError] = useState("");
+  const [systemStatus, setSystemStatus] = useState<SystemStatus>(emptySystemStatus);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -209,7 +226,7 @@ export function App() {
   async function loadAll() {
     setLoadError("");
     try {
-      const [dashboardStats, leadItems, conversationItems, telegramStatus, campaignItems, automationItems, templateItems, mediaItems, purchaseItems, config] = await Promise.all([
+      const [dashboardStats, leadItems, conversationItems, telegramStatus, campaignItems, automationItems, templateItems, mediaItems, purchaseItems, aiSettings, currentSystemStatus] = await Promise.all([
         api.dashboard(),
         api.leads(),
         api.conversations(),
@@ -219,7 +236,8 @@ export function App() {
         api.templates(),
         api.media(),
         api.purchases(),
-        api.aiConfig()
+        api.aiConfig(),
+        api.systemStatus()
       ]);
 
       setStats(dashboardStats);
@@ -236,7 +254,8 @@ export function App() {
       setTemplates(templateItems);
       setMediaAssets(mediaItems);
       setPurchases(purchaseItems);
-      setAiConfig(config);
+      setAiConfig(aiSettings);
+      setSystemStatus(currentSystemStatus);
     } catch (error) {
       const detail = messageFromError(error);
       setStats(emptyStats);
@@ -265,8 +284,10 @@ export function App() {
   }
 
   async function refreshCampaigns() {
-    setCampaigns(await api.campaigns());
-    setStats(await api.dashboard());
+    const [items, dashboardStats, currentSystemStatus] = await Promise.all([api.campaigns(), api.dashboard(), api.systemStatus()]);
+    setCampaigns(items);
+    setStats(dashboardStats);
+    setSystemStatus(currentSystemStatus);
   }
 
   async function refreshAutomations() {
@@ -320,6 +341,19 @@ export function App() {
     void api.messages(selectedConversation.id).then(setMessages).catch(() => setMessages([]));
   }, [selectedConversation?.id]);
 
+  useEffect(() => {
+    if (!tokenReady || (section !== "campaigns" && section !== "settings")) return;
+    const timer = window.setInterval(() => {
+      void Promise.all([api.campaigns(), api.systemStatus()])
+        .then(([items, currentSystemStatus]) => {
+          setCampaigns(items);
+          setSystemStatus(currentSystemStatus);
+        })
+        .catch(() => undefined);
+    }, 10_000);
+    return () => window.clearInterval(timer);
+  }, [section, tokenReady]);
+
   if (!authChecked) {
     return (
       <main className="grid min-h-screen place-items-center bg-panel px-4 text-sm text-zinc-600">
@@ -332,6 +366,35 @@ export function App() {
 
   return (
     <div className="min-h-screen bg-panel text-ink">
+      {mobileNavOpen && (
+        <>
+          <button className="fixed inset-0 z-30 bg-black/30 lg:hidden" aria-label="Cerrar menu" onClick={() => setMobileNavOpen(false)} />
+          <aside className="fixed inset-y-0 left-0 z-40 w-72 border-r border-line bg-white px-3 py-4 shadow-xl lg:hidden">
+            <div className="flex h-12 items-center justify-between px-2">
+              <div className="flex items-center gap-3">
+                <span className="grid h-9 w-9 place-items-center rounded-md bg-pine text-white"><MessageSquareText size={19} /></span>
+                <div><p className="text-sm font-semibold">Telegram CRM</p><p className="text-xs text-zinc-500">Consent ops</p></div>
+              </div>
+              <button className="icon-button" title="Cerrar menu" onClick={() => setMobileNavOpen(false)}><X size={18} /></button>
+            </div>
+            <nav className="mt-5 space-y-1">
+              {sections.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => {
+                    setSection(item.id);
+                    setMobileNavOpen(false);
+                  }}
+                  className={clsx("flex h-10 w-full items-center gap-3 rounded-md px-3 text-sm font-medium", section === item.id ? "bg-ink text-white" : "text-zinc-600 hover:bg-zinc-100")}
+                >
+                  <item.icon size={18} />
+                  {item.label}
+                </button>
+              ))}
+            </nav>
+          </aside>
+        </>
+      )}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-64 border-r border-line bg-white px-3 py-4 lg:block">
         <div className="flex h-12 items-center gap-3 px-2">
           <span className="grid h-9 w-9 place-items-center rounded-md bg-pine text-white">
@@ -374,12 +437,12 @@ export function App() {
       <main className="lg:pl-64">
         <header className="sticky top-0 z-10 flex h-16 items-center justify-between border-b border-line bg-white/95 px-4 backdrop-blur lg:px-7">
           <div className="flex min-w-0 items-center gap-3">
-            <button className="grid h-9 w-9 place-items-center rounded-md border border-line lg:hidden">
+            <button className="grid h-9 w-9 place-items-center rounded-md border border-line lg:hidden" title="Abrir menu" onClick={() => setMobileNavOpen(true)}>
               <LayoutDashboard size={18} />
             </button>
             <div>
               <h1 className="text-lg font-semibold">{sections.find((item) => item.id === section)?.label}</h1>
-              <p className="text-xs text-zinc-500">{telegram.status === "CONNECTED" ? `Telegram @${telegram.username ?? "conectado"}` : `Telegram ${telegram.status.toLowerCase()}`}</p>
+              <p className="max-w-[170px] truncate text-xs text-zinc-500 sm:max-w-none">{telegram.status === "CONNECTED" ? `Telegram @${telegram.username ?? "conectado"}` : `Telegram ${telegram.status.toLowerCase()}`}</p>
             </div>
           </div>
           <div className="flex items-center gap-2">
@@ -416,29 +479,30 @@ export function App() {
               messages={messages}
               composer={composer}
               setComposer={setComposer}
-              onSend={async () => {
-                if (!composer.trim() || !selectedConversation) return;
-                const text = composer.trim();
-                setComposer("");
-                try {
-                  await api.sendMessage(selectedConversation.id, text);
-                  setMessages(await api.messages(selectedConversation.id));
+               onSend={async (mediaAssetId, sensitive) => {
+                 if ((!composer.trim() && !mediaAssetId) || !selectedConversation) return;
+                 const text = composer.trim();
+                 try {
+                   await api.sendMessage(selectedConversation.id, text || undefined, mediaAssetId, sensitive);
+                   setComposer("");
+                   setMessages(await api.messages(selectedConversation.id));
                   await refreshLeadsAndConversations();
                 } catch (error) {
                   setLoadError(messageFromError(error));
                 }
               }}
-              onUpdateLead={async (leadId, payload) => {
+               onUpdateLead={async (leadId, payload) => {
                 await api.updateLead(leadId, payload);
-                await refreshLeadsAndConversations();
-              }}
+                 await refreshLeadsAndConversations();
+               }}
+               onError={setLoadError}
             />
           )}
           {section === "leads" && <LeadsView leads={leads} search={search} setSearch={setSearch} onUpdateLead={async (id, payload) => {
             await api.updateLead(id, payload);
             await refreshLeadsAndConversations();
           }} />}
-          {section === "campaigns" && <CampaignsView campaigns={campaigns} leads={leads} mediaAssets={mediaAssets} onReload={refreshCampaigns} onError={setLoadError} />}
+          {section === "campaigns" && <CampaignsView campaigns={campaigns} leads={leads} mediaAssets={mediaAssets} systemStatus={systemStatus} onReload={refreshCampaigns} onError={setLoadError} />}
           {section === "automations" && <AutomationsView automations={automations} mediaAssets={mediaAssets} onReload={refreshAutomations} onError={setLoadError} />}
           {section === "templates" && <TemplatesView templates={templates} mediaAssets={mediaAssets} onReload={refreshTemplates} onError={setLoadError} />}
           {section === "media" && <MediaView mediaAssets={mediaAssets} onReload={refreshMedia} onError={setLoadError} />}
@@ -448,6 +512,7 @@ export function App() {
               telegram={telegram}
               setTelegram={setTelegram}
               aiConfig={aiConfig}
+              systemStatus={systemStatus}
               onStartQr={startTelegramQr}
               onReloadAi={async () => setAiConfig(await api.aiConfig())}
               onReloadAll={loadAll}
@@ -589,19 +654,52 @@ function InboxView(props: {
   messages: Message[];
   composer: string;
   setComposer: (value: string) => void;
-  onSend: () => void;
+  onSend: (mediaAssetId?: string, sensitive?: boolean) => Promise<void>;
   onUpdateLead: (leadId: string, payload: Record<string, unknown>) => Promise<void>;
+  onError: (message: string) => void;
 }) {
   const lead = props.selected?.lead ?? null;
   const [noteDraft, setNoteDraft] = useState("");
+  const [attachedImage, setAttachedImage] = useState<MediaAsset | null>(null);
+  const [uploadingImage, setUploadingImage] = useState(false);
+  const [sensitiveMessage, setSensitiveMessage] = useState(false);
 
   useEffect(() => {
     setNoteDraft(lead?.notes ?? "");
   }, [lead?.id, lead?.notes]);
 
+  useEffect(() => {
+    setAttachedImage(null);
+    setSensitiveMessage(false);
+  }, [props.selected?.id]);
+
+  async function uploadImage(file?: File) {
+    if (!file) return;
+    setUploadingImage(true);
+    try {
+      setAttachedImage(await api.uploadMedia(file));
+    } catch (error) {
+      props.onError(messageFromError(error));
+    } finally {
+      setUploadingImage(false);
+    }
+  }
+
+  async function removeAttachedImage() {
+    if (!attachedImage) return;
+    await api.deleteMedia(attachedImage.id).catch(() => undefined);
+    setAttachedImage(null);
+  }
+
+  async function sendComposer() {
+    await props.onSend(attachedImage?.id, sensitiveMessage);
+    setAttachedImage(null);
+    setSensitiveMessage(false);
+  }
+
   return (
-    <div className="grid h-[calc(100vh-116px)] min-h-[640px] gap-4 xl:grid-cols-[330px_1fr_340px]">
-      <section className="overflow-hidden rounded-lg border border-line bg-white shadow-soft">
+    <div className="grid gap-4 xl:h-[calc(100vh-116px)] xl:min-h-[640px] xl:grid-cols-[330px_1fr_340px]">
+      <section className="max-h-80 overflow-hidden rounded-lg border border-line bg-white shadow-soft xl:max-h-none">
         <div className="border-b border-line p-3">
           <div className="flex items-center gap-2 rounded-md bg-panel px-3 py-2">
             <Search size={16} className="text-zinc-400" />
@@ -631,7 +729,7 @@ function InboxView(props: {
         </div>
       </section>
 
-      <section className="flex overflow-hidden rounded-lg border border-line bg-white shadow-soft">
+      <section className="flex min-h-[640px] overflow-hidden rounded-lg border border-line bg-white shadow-soft xl:min-h-0">
         <div className="flex min-w-0 flex-1 flex-col">
           <div className="flex h-14 items-center justify-between border-b border-line px-4">
             <div>
@@ -667,7 +765,22 @@ function InboxView(props: {
             </div>
           </div>
           <div className="border-t border-line bg-white p-3">
+            {attachedImage && (
+              <div className="mb-2 flex items-center gap-3 rounded-md border border-line bg-panel p-2">
+                <img src={mediaUrl(attachedImage.url)} alt={attachedImage.originalName} className="h-14 w-14 rounded-md object-cover" />
+                <p className="min-w-0 flex-1 truncate text-sm">{attachedImage.originalName}</p>
+                <button type="button" className="icon-button" title="Quitar imagen" onClick={removeAttachedImage}><X size={16} /></button>
+              </div>
+            )}
+            <label className="mb-2 flex items-center gap-2 text-xs text-zinc-600">
+              <input type="checkbox" checked={sensitiveMessage} onChange={(event) => setSensitiveMessage(event.target.checked)} />
+              Contenido sensible (requiere mayoria de edad confirmada)
+            </label>
             <div className="flex items-end gap-2">
+              <label className="icon-button shrink-0 cursor-pointer" title="Adjuntar imagen">
+                <Image size={18} />
+                <input className="hidden" type="file" accept="image/jpeg,image/png,image/webp" disabled={!props.selected || uploadingImage} onChange={(event) => void uploadImage(event.target.files?.[0])} />
+              </label>
               <textarea
                 value={props.composer}
                 onChange={(event) => props.setComposer(event.target.value)}
@@ -675,7 +788,7 @@ function InboxView(props: {
                 placeholder="Mensaje"
                 disabled={!props.selected}
               />
-              <button onClick={props.onSend} className="grid h-10 w-10 place-items-center rounded-md bg-pine text-white disabled:opacity-50" title="Enviar" disabled={!props.selected || !props.composer.trim()}>
+              <button onClick={sendComposer} className="grid h-10 w-10 place-items-center rounded-md bg-pine text-white disabled:opacity-50" title="Enviar" disabled={!props.selected || (!props.composer.trim() && !attachedImage) || uploadingImage}>
                 <Send size={18} />
               </button>
             </div>
@@ -821,7 +934,8 @@ function LeadsView({ leads, search, setSearch, onUpdateLead }: { leads: Lead[]; 
   );
 }
 
-function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { campaigns: Campaign[]; leads: Lead[]; mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, onError }: { campaigns: Campaign[]; leads: Lead[]; mediaAssets: MediaAsset[]; systemStatus: SystemStatus; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
     description: "",
@@ -829,6 +943,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
     message: "",
     imageId: "",
     link: "",
+    startAt: "",
     sendTime: "10:00",
     dailyLimit: "50",
     pauseSeconds: "90",
@@ -864,19 +979,23 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
     }
     setSaving(true);
     try {
-      await api.createCampaign({
+      const payload = {
         name,
         description: form.description.trim() || undefined,
         segment: selectedSegment.segment,
         message: form.message,
-        imageId: form.imageId || undefined,
+        imageId: form.imageId || (editingId ? null : undefined),
         link: form.link.trim(),
+        startAt: form.startAt ? new Date(form.startAt).toISOString() : (editingId ? null : undefined),
         sendTime: form.sendTime,
         dailyLimit: Number(form.dailyLimit),
         pauseSeconds: Number(form.pauseSeconds),
         sensitive: form.sensitive
-      });
-      setForm((current) => ({ ...current, name: "", description: "", message: "", imageId: "", link: "" }));
+      };
+      if (editingId) await api.updateCampaign(editingId, payload);
+      else await api.createCampaign(payload);
+      setEditingId(null);
+      setForm((current) => ({ ...current, name: "", description: "", message: "", imageId: "", link: "", startAt: "" }));
       setAttachedImage(null);
       await onReload();
     } catch (error) {
@@ -884,6 +1003,28 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
     } finally {
       setSaving(false);
     }
+  }
+
+  function editCampaign(campaign: Campaign) {
+    const segment = campaign.segment ?? {};
+    const segmentKey = campaignSegments.find((item) => {
+      return item.segment.status === segment.status && Boolean(item.segment.ageConfirmed) === Boolean(segment.ageConfirmed);
+    })?.value ?? "optin";
+    setEditingId(campaign.id);
+    setAttachedImage(null);
+    setForm({
+      name: campaign.name,
+      description: campaign.description ?? "",
+      segment: segmentKey,
+      message: campaign.message,
+      imageId: campaign.imageId ?? "",
+      link: campaign.link ?? "",
+      startAt: toLocalDateTimeInput(campaign.startAt),
+      sendTime: campaign.sendTime ?? "10:00",
+      dailyLimit: String(campaign.dailyLimit),
+      pauseSeconds: String(campaign.pauseSeconds),
+      sensitive: campaign.sensitive
+    });
   }
 
   async function runAction(action: () => Promise<unknown>) {
@@ -918,11 +1059,21 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
   }
 
   return (
-    <section className="grid gap-4 xl:grid-cols-[430px_1fr]">
-      <form onSubmit={submit} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+    <section className="space-y-4">
+      <div className={clsx(
+        "grid gap-3 rounded-lg border px-4 py-3 text-sm md:grid-cols-3",
+        systemStatus.worker.online && systemStatus.telegram.connected ? "border-pine/30 bg-pine/5" : "border-coral/30 bg-coral/5"
+      )}>
+        <div><span className="text-xs font-semibold uppercase text-zinc-500">Worker</span><p className="mt-1 font-medium">{systemStatus.worker.online ? "Activo y procesando" : "Apagado o sin conexion"}</p></div>
+        <div><span className="text-xs font-semibold uppercase text-zinc-500">Telegram</span><p className="mt-1 font-medium">{systemStatus.telegram.connected ? "Cuenta conectada" : `No conectado (${systemStatus.telegram.status})`}</p></div>
+        <div><span className="text-xs font-semibold uppercase text-zinc-500">Ultimo proceso</span><p className="mt-1 font-medium">{systemStatus.worker.lastSuccessAt ? new Date(systemStatus.worker.lastSuccessAt).toLocaleString() : "Sin actividad registrada"}</p></div>
+        {systemStatus.worker.lastError && <p className="md:col-span-3 text-coral">Error del worker: {systemStatus.worker.lastError}</p>}
+      </div>
+      <div className="grid gap-4 xl:grid-cols-[430px_1fr]">
+      <form onSubmit={submit} className="order-2 rounded-lg border border-line bg-white p-4 shadow-soft xl:order-1">
         <div className="flex items-center gap-3">
           <span className="grid h-9 w-9 place-items-center rounded-md bg-pine/10 text-pine"><Send size={18} /></span>
-          <h2 className="text-sm font-semibold">Nueva campana permitida</h2>
+          <h2 className="text-sm font-semibold">{editingId ? "Editar campana" : "Nueva campana permitida"}</h2>
         </div>
         <label className="field-label mt-4">Nombre</label>
         <input className="field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required minLength={2} />
@@ -952,7 +1103,11 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
             </select>
           </label>
           <label>
-            <span className="field-label">Hora</span>
+            <span className="field-label">Inicio programado</span>
+            <input className="field" type="datetime-local" value={form.startAt} onChange={(event) => setForm({ ...form, startAt: event.target.value })} />
+          </label>
+          <label>
+            <span className="field-label">Hora del siguiente dia</span>
             <input className="field" type="time" value={form.sendTime} onChange={(event) => setForm({ ...form, sendTime: event.target.value })} />
           </label>
           <label>
@@ -991,26 +1146,76 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
           <input type="checkbox" checked={form.sensitive} onChange={(event) => setForm({ ...form, sensitive: event.target.checked })} />
           Requiere mayoria de edad confirmada
         </label>
-        <button className="button-primary mt-4" disabled={saving}>
-          <Plus size={17} />
-          Crear campana
-        </button>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button className="button-primary" disabled={saving}>
+            {editingId ? <Save size={17} /> : <Plus size={17} />}
+            {editingId ? "Guardar cambios" : "Crear campana"}
+          </button>
+          {editingId && (
+            <button type="button" className="button-secondary" onClick={() => {
+              setEditingId(null);
+              setAttachedImage(null);
+              setForm((current) => ({ ...current, name: "", description: "", message: "", imageId: "", link: "", startAt: "" }));
+            }}>
+              <X size={16} />
+              Cancelar edicion
+            </button>
+          )}
+        </div>
       </form>
 
-      <div className="space-y-2">
+      <div className="order-1 space-y-2 xl:order-2">
         {campaigns.length === 0 && <EmptyState text="No hay campanas reales creadas." />}
-        {campaigns.map((campaign) => (
-          <div key={campaign.id} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+        {campaigns.map((campaign) => {
+          const progress = campaign.progress ?? {};
+          const pending = Number(progress.pending ?? 0);
+          const processing = Number(progress.processing ?? 0);
+          const sent = Number(progress.sent ?? 0);
+          const failed = Number(progress.failed ?? 0);
+          const skipped = Number(progress.skipped ?? 0);
+          const total = campaign._count?.recipients ?? pending + processing + sent + failed + skipped;
+          const completed = sent + failed + skipped;
+          const percent = total > 0 ? Math.round((completed / total) * 100) : 0;
+          const canPause = campaign.status === "ACTIVE" || campaign.status === "SCHEDULED";
+          const canActivate = campaign.status === "DRAFT" || campaign.status === "PAUSED" || (campaign.status === "FINISHED" && failed > 0);
+
+          return <div key={campaign.id} className="rounded-lg border border-line bg-white p-4 shadow-soft">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <p className="text-sm font-semibold">{campaign.name}</p>
-                <p className="mt-1 text-xs text-zinc-500">{campaign.description || "Sin descripcion"} - {campaign._count?.recipients ?? 0} destinatarios preparados</p>
+                <p className="mt-1 text-xs text-zinc-500">{campaign.description || "Sin descripcion"} - {total} destinatarios preparados</p>
               </div>
               <StatusBadge status={campaign.status} />
             </div>
             <p className="mt-3 whitespace-pre-wrap rounded-md bg-panel px-3 py-2 text-sm text-zinc-700">{campaign.message}</p>
+            <div className="mt-3">
+              <div className="flex flex-wrap justify-between gap-2 text-xs text-zinc-600">
+                <span>{percent}% completado</span>
+                <span>{sent} enviados - {pending + processing} pendientes - {failed} fallidos - {skipped} omitidos</span>
+              </div>
+              <div className="mt-2 h-2 overflow-hidden rounded bg-zinc-100">
+                <div className="h-full bg-pine transition-all" style={{ width: `${percent}%` }} />
+              </div>
+            </div>
             {preview[campaign.id] && <p className="mt-2 text-sm text-pine">{preview[campaign.id]}</p>}
+            {campaign.recentErrors && campaign.recentErrors.length > 0 && (
+              <details className="mt-3 rounded-md border border-coral/20 bg-coral/5 px-3 py-2 text-sm">
+                <summary className="cursor-pointer font-medium text-coral">Ver errores de envio ({failed})</summary>
+                <div className="mt-2 space-y-2">
+                  {campaign.recentErrors.map((item) => (
+                    <div key={`${item.lead.id}-${item.lastAttemptAt ?? item.attempts}`} className="border-t border-coral/10 pt-2">
+                      <p className="font-medium">{item.lead.name} - {item.attempts} intentos</p>
+                      <p className="mt-1 break-words text-xs text-zinc-600">{item.error || "Error sin detalle"}</p>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            )}
             <div className="mt-3 flex flex-wrap gap-2">
+              <button className="button-secondary" disabled={canPause} onClick={() => editCampaign(campaign)}>
+                <Save size={16} />
+                Editar
+              </button>
               <button className="button-secondary" onClick={() => runAction(async () => {
                 const result = await api.previewCampaign(campaign.id);
                 setPreview((current) => ({ ...current, [campaign.id]: `${result.count} leads elegibles para esta campana.` }));
@@ -1018,27 +1223,33 @@ function CampaignsView({ campaigns, leads, mediaAssets, onReload, onError }: { c
                 <Search size={16} />
                 Vista previa
               </button>
-              <button className="button-secondary" onClick={() => runAction(() => api.activateCampaign(campaign.id))}>
+              <button className="button-secondary" disabled={!canActivate} onClick={() => runAction(() => api.activateCampaign(campaign.id))}>
                 <Play size={16} />
-                Activar
+                {failed > 0 && campaign.status === "FINISHED" ? "Reintentar fallidos" : "Activar"}
               </button>
-              <button className="button-secondary" onClick={() => runAction(() => api.pauseCampaign(campaign.id))}>
+              <button className="button-secondary" disabled={!canPause} onClick={() => runAction(() => api.pauseCampaign(campaign.id))}>
                 <Pause size={16} />
                 Pausar
+              </button>
+              <button className="button-secondary" disabled={pending === 0} onClick={() => window.confirm("Cancelar todos los envios pendientes de esta campana?") && runAction(() => api.cancelPendingCampaign(campaign.id))}>
+                <ArchiveX size={16} />
+                Cancelar pendientes
               </button>
               <button className="button-secondary" onClick={() => window.confirm("Eliminar campana?") && runAction(() => api.deleteCampaign(campaign.id))}>
                 <Trash2 size={16} />
                 Eliminar
               </button>
             </div>
-          </div>
-        ))}
+          </div>;
+        })}
+      </div>
       </div>
     </section>
   );
 }
 
 function AutomationsView({ automations, mediaAssets, onReload, onError }: { automations: Automation[]; mediaAssets: MediaAsset[]; onReload: () => Promise<void>; onError: (message: string) => void }) {
+  const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
     trigger: "NEW_MESSAGE_RECEIVED",
@@ -1064,7 +1275,7 @@ function AutomationsView({ automations, mediaAssets, onReload, onError }: { auto
   async function submit(event: FormEvent) {
     event.preventDefault();
     try {
-      await api.createAutomation({
+      const payload = {
         name: form.name.trim(),
         trigger: form.trigger,
         conditions: {},
@@ -1076,12 +1287,33 @@ function AutomationsView({ automations, mediaAssets, onReload, onError }: { auto
         priority: 0,
         sensitive: form.sensitive,
         allowRepeat: form.allowRepeat
-      });
+      };
+      if (editingId) await api.updateAutomation(editingId, payload);
+      else await api.createAutomation(payload);
+      setEditingId(null);
       setForm((current) => ({ ...current, name: "", text: "", tag: "", imageId: "" }));
       await onReload();
     } catch (error) {
       onError(messageFromError(error));
     }
+  }
+
+  function editAutomation(automation: Automation) {
+    const payload = automation.actionPayload ?? {};
+    setEditingId(automation.id);
+    setForm({
+      name: automation.name,
+      trigger: automation.trigger,
+      delaySeconds: String(automation.delaySeconds),
+      action: automation.action,
+      text: String(payload.text ?? ""),
+      status: String(payload.status ?? "INTERESADO"),
+      tag: String(payload.tag ?? ""),
+      imageId: String(payload.mediaAssetId ?? ""),
+      executionLimit: String(automation.executionLimit ?? 1),
+      sensitive: automation.sensitive,
+      allowRepeat: automation.allowRepeat
+    });
   }
 
   async function runAction(action: () => Promise<unknown>) {
@@ -1120,7 +1352,7 @@ function AutomationsView({ automations, mediaAssets, onReload, onError }: { auto
         <select className="field" value={form.action} onChange={(event) => setForm({ ...form, action: event.target.value })}>
           {automationActions.map((action) => <option key={action}>{action}</option>)}
         </select>
-        {(form.action === "SEND_MESSAGE" || form.action === "SEND_MESSAGE_IMAGE") && (
+        {(["SEND_MESSAGE", "SEND_MESSAGE_IMAGE", "CREATE_INTERNAL_TASK", "NOTIFY_ADMIN"].includes(form.action)) && (
           <>
             <label className="field-label mt-3">Mensaje</label>
             <textarea className="min-h-28 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" value={form.text} onChange={(event) => setForm({ ...form, text: event.target.value })} />
@@ -1159,10 +1391,21 @@ function AutomationsView({ automations, mediaAssets, onReload, onError }: { auto
             Permitir repetir en el mismo lead
           </label>
         </div>
-        <button className="button-primary mt-4">
-          <Plus size={17} />
-          Crear regla
-        </button>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button className="button-primary">
+            {editingId ? <Save size={17} /> : <Plus size={17} />}
+            {editingId ? "Guardar cambios" : "Crear regla"}
+          </button>
+          {editingId && (
+            <button type="button" className="button-secondary" onClick={() => {
+              setEditingId(null);
+              setForm((current) => ({ ...current, name: "", text: "", tag: "", imageId: "" }));
+            }}>
+              <X size={16} />
+              Cancelar edicion
+            </button>
+          )}
+        </div>
       </form>
 
       <div className="space-y-2">
@@ -1173,10 +1416,15 @@ function AutomationsView({ automations, mediaAssets, onReload, onError }: { auto
               <div>
                 <p className="text-sm font-semibold">{automation.name}</p>
                 <p className="mt-1 text-xs text-zinc-500">{automation.trigger} - delay {automation.delaySeconds}s - {automation.action}</p>
+                <p className="mt-1 text-xs text-zinc-500">{Number(automation.progress?.executed ?? 0)} ejecutadas - {Number(automation.progress?.scheduled ?? 0)} programadas - {Number(automation.progress?.failed ?? 0)} fallidas</p>
               </div>
               <StatusBadge status={automation.status} />
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
+              <button className="button-secondary" onClick={() => editAutomation(automation)}>
+                <Save size={16} />
+                Editar
+              </button>
               <button className="button-secondary" onClick={() => runAction(() => api.updateAutomation(automation.id, { status: automation.status === "ACTIVE" ? "INACTIVE" : "ACTIVE" }))}>
                 {automation.status === "ACTIVE" ? <Pause size={16} /> : <Play size={16} />}
                 {automation.status === "ACTIVE" ? "Pausar" : "Activar"}
@@ -1186,6 +1434,12 @@ function AutomationsView({ automations, mediaAssets, onReload, onError }: { auto
                 Eliminar
               </button>
             </div>
+            {automation.recentErrors && automation.recentErrors.length > 0 && (
+              <details className="mt-3 rounded-md border border-coral/20 bg-coral/5 px-3 py-2 text-sm">
+                <summary className="cursor-pointer font-medium text-coral">Ver errores recientes</summary>
+                {automation.recentErrors.map((item) => <p key={`${item.lead.id}-${item.createdAt}`} className="mt-2 text-xs text-zinc-600">{item.lead.name}: {item.error || "Error sin detalle"}</p>)}
+              </details>
+            )}
           </div>
         ))}
       </div>
@@ -1446,6 +1700,7 @@ function SettingsView(props: {
   telegram: TelegramStatus;
   setTelegram: (value: TelegramStatus) => void;
   aiConfig: AiConfig;
+  systemStatus: SystemStatus;
   onStartQr: () => Promise<void>;
   onReloadAi: () => Promise<void>;
   onReloadAll: () => Promise<void>;
@@ -1459,8 +1714,14 @@ function SettingsView(props: {
     maxTokens: "400",
     maxChars: "700",
     tone: "calido, breve y natural",
+    allowedStart: "00:00",
+    allowedEnd: "23:59",
+    timezone: "America/La_Paz",
+    forbiddenWords: "",
     globalEnabled: false
   });
+  const [aiTest, setAiTest] = useState("");
+  const [testingAi, setTestingAi] = useState(false);
 
   useEffect(() => {
     setAiForm({
@@ -1471,6 +1732,10 @@ function SettingsView(props: {
       maxTokens: String(props.aiConfig.maxTokens ?? 400),
       maxChars: String(props.aiConfig.maxChars ?? 700),
       tone: String(props.aiConfig.tone ?? "calido, breve y natural"),
+      allowedStart: String(props.aiConfig.allowedHours?.start ?? "00:00"),
+      allowedEnd: String(props.aiConfig.allowedHours?.end ?? "23:59"),
+      timezone: String(props.aiConfig.allowedHours?.timezone ?? "America/La_Paz"),
+      forbiddenWords: Array.isArray(props.aiConfig.forbiddenWords) ? props.aiConfig.forbiddenWords.join(", ") : "",
       globalEnabled: Boolean(props.aiConfig.globalEnabled)
     });
   }, [props.aiConfig]);
@@ -1486,11 +1751,26 @@ function SettingsView(props: {
         maxTokens: Number(aiForm.maxTokens),
         maxChars: Number(aiForm.maxChars),
         tone: aiForm.tone,
+        allowedHours: { start: aiForm.allowedStart, end: aiForm.allowedEnd, timezone: aiForm.timezone },
+        forbiddenWords: aiForm.forbiddenWords.split(",").map((word) => word.trim()).filter(Boolean),
         globalEnabled: aiForm.globalEnabled
       });
       await props.onReloadAi();
     } catch (error) {
       props.onError(messageFromError(error));
+    }
+  }
+
+  async function testAiConnection() {
+    setTestingAi(true);
+    setAiTest("");
+    try {
+      const result = await api.testAi();
+      setAiTest(`${result.response} - ${result.model}`);
+    } catch (error) {
+      props.onError(messageFromError(error));
+    } finally {
+      setTestingAi(false);
     }
   }
 
@@ -1530,6 +1810,10 @@ function SettingsView(props: {
     <section className="grid gap-4 xl:grid-cols-[360px_1fr]">
       <div className="rounded-lg border border-line bg-white p-4 shadow-soft">
         <h2 className="text-sm font-semibold">Telegram</h2>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-md bg-panel p-2"><span className="text-zinc-500">Worker</span><p className="mt-1 font-semibold">{props.systemStatus.worker.online ? "Activo" : "Apagado"}</p></div>
+          <div className="rounded-md bg-panel p-2"><span className="text-zinc-500">IA</span><p className="mt-1 font-semibold">{props.systemStatus.openai.configured ? "Configurada" : "Sin API key"}</p></div>
+        </div>
         <div className="mt-4 grid h-44 place-items-center rounded-lg border border-dashed border-line bg-panel">
           {props.telegram.qrCodeDataUrl ? <img src={props.telegram.qrCodeDataUrl} alt="QR Telegram" className="h-40 w-40" /> : <QrCode size={48} className="text-zinc-400" />}
         </div>
@@ -1563,6 +1847,10 @@ function SettingsView(props: {
           <SettingInput label="Max caracteres" icon={MessageSquareText} value={aiForm.maxChars} onChange={(value) => setAiForm({ ...aiForm, maxChars: value })} type="number" />
           <SettingInput label="Tono" icon={WandSparkles} value={aiForm.tone} onChange={(value) => setAiForm({ ...aiForm, tone: value })} />
           <SettingInput label={props.aiConfig.encryptedApiKey ? "Nueva API key OpenAI" : "API key OpenAI"} icon={KeyRound} value={aiForm.apiKey} onChange={(value) => setAiForm({ ...aiForm, apiKey: value })} type="password" />
+          <SettingInput label="Responder desde" icon={CalendarClock} value={aiForm.allowedStart} onChange={(value) => setAiForm({ ...aiForm, allowedStart: value })} type="time" />
+          <SettingInput label="Responder hasta" icon={CalendarClock} value={aiForm.allowedEnd} onChange={(value) => setAiForm({ ...aiForm, allowedEnd: value })} type="time" />
+          <SettingInput label="Zona horaria" icon={CalendarClock} value={aiForm.timezone} onChange={(value) => setAiForm({ ...aiForm, timezone: value })} />
+          <SettingInput label="Palabras prohibidas (separadas por coma)" icon={ArchiveX} value={aiForm.forbiddenWords} onChange={(value) => setAiForm({ ...aiForm, forbiddenWords: value })} />
         </div>
         <label className="mt-4 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm">
           <input type="checkbox" checked={aiForm.globalEnabled} onChange={(event) => setAiForm({ ...aiForm, globalEnabled: event.target.checked })} />
@@ -1570,10 +1858,17 @@ function SettingsView(props: {
         </label>
         <label className="field-label mt-4">Prompt base</label>
         <textarea className="mt-2 min-h-40 w-full rounded-md border border-line p-3 text-sm outline-none focus:border-pine" value={aiForm.promptBase} onChange={(event) => setAiForm({ ...aiForm, promptBase: event.target.value })} />
-        <button className="button-primary mt-4">
-          <Save size={17} />
-          Guardar ajustes IA
-        </button>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <button className="button-primary">
+            <Save size={17} />
+            Guardar ajustes IA
+          </button>
+          <button type="button" className="button-secondary" disabled={testingAi} onClick={testAiConnection}>
+            <Activity size={17} />
+            {testingAi ? "Probando..." : "Probar conexion IA"}
+          </button>
+        </div>
+        {aiTest && <p className="mt-3 rounded-md bg-pine/10 px-3 py-2 text-sm text-pine">{aiTest}</p>}
       </form>
     </section>
   );
@@ -1593,12 +1888,31 @@ function EmptyState({ text }: { text: string }) {
 }
 
 function StatusBadge({ status }: { status: string }) {
+  const labels: Record<string, string> = {
+    DRAFT: "Borrador",
+    SCHEDULED: "Programada",
+    ACTIVE: "Enviando",
+    PAUSED: "Pausada",
+    FINISHED: "Finalizada",
+    PENDING: "Pendiente",
+    PROCESSING: "Procesando",
+    SENT: "Enviado",
+    SKIPPED: "Omitido",
+    FAILED: "Fallido",
+    CONNECTED: "Conectado",
+    DISCONNECTED: "Desconectado",
+    QR_PENDING: "Esperando QR",
+    EXPIRED: "Expirado",
+    CONFIRMADO: "Confirmado",
+    RECHAZADO: "Rechazado",
+    PENDIENTE: "Pendiente"
+  };
   const tone = status.includes("NO_") || status === "FAILED" || status === "ERROR" || status === "RECHAZADO" || status === "EXPIRED"
     ? "bg-coral/10 text-coral"
     : status.includes("ACT") || status === "COMPRO" || status === "CONFIRMADO" || status === "CONNECTED"
       ? "bg-pine/10 text-pine"
       : "bg-amber/10 text-amber";
-  return <span className={`inline-flex rounded-md px-2 py-1 text-xs font-semibold ${tone}`}>{status}</span>;
+  return <span className={`inline-flex rounded-md px-2 py-1 text-xs font-semibold ${tone}`}>{labels[status] ?? status.replaceAll("_", " ")}</span>;
 }
 
 function MiniBadge({ label, color }: { label: string; color?: string }) {

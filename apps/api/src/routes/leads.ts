@@ -58,9 +58,16 @@ leadsRouter.patch(
   "/:id",
   asyncHandler(async (req, res) => {
     const input = leadUpdateSchema.parse(req.body);
+    const existing = await prisma.lead.findUniqueOrThrow({ where: { id: req.params.id } });
     const updated = await prisma.lead.update({ where: { id: req.params.id }, data: input });
     if (input.status === "NO_VOLVER_A_ESCRIBIR" || input.status === "NO_INTERESADO" || input.status === "BLOQUEADO") {
       await automationService.cancelPendingForLead(req.params.id);
+    }
+    if (input.status && input.status !== existing.status) {
+      await automationService.scheduleForTrigger("LEAD_STATUS_CHANGED", req.params.id, { from: existing.status, to: input.status });
+    }
+    if (input.ageConfirmed === true && !existing.ageConfirmed) {
+      await automationService.scheduleForTrigger("AGE_CONFIRMED", req.params.id);
     }
     await auditLog(req, "LEAD_UPDATED", { entityType: "Lead", entityId: req.params.id, metadata: input });
     res.json(updated);
@@ -83,6 +90,7 @@ leadsRouter.post(
       create: { leadId: req.params.id, tagId: tag.id }
     });
     await auditLog(req, "LEAD_TAG_ADDED", { entityType: "Lead", entityId: req.params.id, metadata: { tag: name } });
+    await automationService.scheduleForTrigger("TAG_ADDED", req.params.id, { tag: name, tagId: tag.id });
     res.status(201).json(tag);
   })
 );

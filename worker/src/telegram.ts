@@ -1,5 +1,7 @@
+import fs from "node:fs/promises";
 import path from "node:path";
 import { TelegramClient } from "telegram";
+import { CustomFile } from "telegram/client/uploads";
 import { StringSession } from "telegram/sessions";
 import { prisma } from "@crm/db";
 import { canMessageLead, type SendIntent } from "@crm/shared";
@@ -7,6 +9,22 @@ import { config } from "./config";
 import { decryptSecret } from "./crypto";
 
 let client: TelegramClient | undefined;
+
+async function resolveMediaFile(media: { storage: string; filename: string; url: string; deletedAt: Date | null; content: Uint8Array | null }) {
+  if (media.deletedAt) throw new Error("La imagen fue eliminada o ya expiro");
+  if (media.content) return new CustomFile(media.filename, media.content.length, "", Buffer.from(media.content));
+  if (media.storage !== "local") return media.url;
+
+  const localFile = path.resolve(config.media.localDir, media.filename);
+  try {
+    await fs.access(localFile);
+    return localFile;
+  } catch {
+    if (media.url.startsWith("http://") || media.url.startsWith("https://")) return media.url;
+    if (media.url.startsWith("/")) return `${config.apiUrl}${media.url}`;
+    throw new Error("La imagen no existe en el worker. Configura API_URL en el servicio Worker.");
+  }
+}
 
 async function getClient() {
   if (client && (await client.checkAuthorization())) return client;
@@ -53,7 +71,7 @@ export async function sendToLead(input: {
   const tg = await getClient();
 
   if (media) {
-    const file = media.storage === "local" ? path.resolve(config.media.localDir, media.filename) : media.url;
+    const file = await resolveMediaFile(media);
     await tg.sendFile(lead.telegramChatId, { file, caption: input.text });
   } else {
     await tg.sendMessage(lead.telegramChatId, { message: input.text ?? "" });

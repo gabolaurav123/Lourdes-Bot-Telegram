@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { campaignSchema } from "@crm/shared";
+import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler } from "../lib/async";
 import { auditLog } from "../lib/audit";
@@ -12,7 +13,7 @@ export const campaignsRouter = Router();
 campaignsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(await prisma.campaign.findMany({ include: { image: true, _count: { select: { recipients: true } } }, orderBy: { createdAt: "desc" } }));
+    res.json(await campaignService.list());
   })
 );
 
@@ -53,12 +54,27 @@ campaignsRouter.patch(
   "/:id",
   requireRole("OWNER", "ADMIN"),
   asyncHandler(async (req, res) => {
+    const existing = await prisma.campaign.findUniqueOrThrow({ where: { id: req.params.id } });
+    if (existing.status === "ACTIVE" || existing.status === "SCHEDULED") {
+      res.status(409).json({ error: "Pausa la campana antes de editarla." });
+      return;
+    }
+    const input = campaignSchema.partial().extend({
+      imageId: z.string().nullable().optional(),
+      startAt: z.string().nullable().optional()
+    }).parse(req.body);
     const data = {
-      ...req.body,
-      segment: req.body.segment === undefined ? undefined : toInputJson(req.body.segment),
-      exclusions: req.body.exclusions === undefined ? undefined : toInputJson(req.body.exclusions),
-      allowedHours: req.body.allowedHours === undefined ? undefined : toInputJson(req.body.allowedHours),
-      startAt: req.body.startAt ? new Date(req.body.startAt) : req.body.startAt
+      name: input.name,
+      description: input.description,
+      segment: input.segment === undefined ? undefined : toInputJson(input.segment),
+      message: input.message,
+      imageId: input.imageId,
+      link: input.link,
+      startAt: input.startAt ? new Date(input.startAt) : input.startAt,
+      sendTime: input.sendTime,
+      dailyLimit: input.dailyLimit,
+      pauseSeconds: input.pauseSeconds,
+      sensitive: input.sensitive
     };
     const campaign = await prisma.campaign.update({ where: { id: req.params.id }, data });
     await auditLog(req, "CAMPAIGN_UPDATED", { entityType: "Campaign", entityId: req.params.id });
@@ -83,6 +99,16 @@ campaignsRouter.post(
     const campaign = await campaignService.pause(req.params.id);
     await auditLog(req, "CAMPAIGN_PAUSED", { entityType: "Campaign", entityId: req.params.id });
     res.json(campaign);
+  })
+);
+
+campaignsRouter.post(
+  "/:id/cancel-pending",
+  requireRole("OWNER", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    const result = await campaignService.cancelPending(req.params.id);
+    await auditLog(req, "CAMPAIGN_PENDING_CANCELLED", { entityType: "Campaign", entityId: req.params.id, metadata: result });
+    res.json(result);
   })
 );
 

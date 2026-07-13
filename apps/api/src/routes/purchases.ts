@@ -5,6 +5,7 @@ import { prisma } from "../lib/prisma";
 import { asyncHandler } from "../lib/async";
 import { auditLog } from "../lib/audit";
 import { automationService } from "../services/automation.service";
+import { safeMediaSelect } from "../lib/media";
 
 export const purchasesRouter = Router();
 
@@ -15,7 +16,7 @@ const purchaseStatusSchema = z.object({
 purchasesRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(await prisma.purchase.findMany({ include: { lead: true, receipt: true }, orderBy: { createdAt: "desc" } }));
+    res.json(await prisma.purchase.findMany({ include: { lead: true, receipt: { select: safeMediaSelect } }, orderBy: { createdAt: "desc" } }));
   })
 );
 
@@ -35,6 +36,7 @@ purchasesRouter.post(
       }
     });
     await auditLog(req, "PURCHASE_REGISTERED", { entityType: "Purchase", entityId: purchase.id });
+    await automationService.scheduleForTrigger("PURCHASE_REGISTERED", purchase.leadId, { purchaseId: purchase.id, amount: String(purchase.amount) });
     res.status(201).json(purchase);
   })
 );
@@ -47,7 +49,7 @@ purchasesRouter.patch(
     const purchase = await prisma.purchase.update({
       where: { id: req.params.id },
       data: { status: input.status },
-      include: { lead: true, receipt: true }
+      include: { lead: true, receipt: { select: safeMediaSelect } }
     });
 
     if (input.status === "CONFIRMADO" && existing.status !== "CONFIRMADO") {

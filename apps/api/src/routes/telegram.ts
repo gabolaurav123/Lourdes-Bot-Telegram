@@ -28,7 +28,9 @@ telegramRouter.post(
   "/sync",
   requireRole("OWNER", "ADMIN"),
   asyncHandler(async (req, res) => {
-    const result = await telegramService.syncDialogs(Number(req.body?.limit ?? config.telegram.syncLimit));
+    const requestedLimit = Number(req.body?.limit ?? config.telegram.syncLimit);
+    const limit = Math.min(5000, Math.max(1, Number.isFinite(requestedLimit) ? requestedLimit : config.telegram.syncLimit));
+    const result = await telegramService.syncDialogs(limit);
     await auditLog(req, "TELEGRAM_SYNC", { metadata: result });
     res.json(result);
   })

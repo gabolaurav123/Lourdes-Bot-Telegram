@@ -5,8 +5,16 @@ import { asyncHandler } from "../lib/async";
 import { auditLog } from "../lib/audit";
 import { toInputJson } from "../lib/json";
 import { requireRole } from "../middleware/requireRole";
+import { systemService } from "../services/system.service";
 
 export const settingsRouter = Router();
+
+settingsRouter.get(
+  "/system-status",
+  asyncHandler(async (_req, res) => {
+    res.json(await systemService.status());
+  })
+);
 
 settingsRouter.get(
   "/",

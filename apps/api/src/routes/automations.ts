@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { automationSchema } from "@crm/shared";
+import { z } from "zod";
 import { prisma } from "../lib/prisma";
 import { asyncHandler } from "../lib/async";
 import { auditLog } from "../lib/audit";
@@ -12,7 +13,30 @@ export const automationsRouter = Router();
 automationsRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(await prisma.automation.findMany({ include: { _count: { select: { runs: true } } }, orderBy: { createdAt: "desc" } }));
+    const automations = await prisma.automation.findMany({ include: { _count: { select: { runs: true } } }, orderBy: { createdAt: "desc" } });
+    if (!automations.length) {
+      res.json([]);
+      return;
+    }
+    const ids = automations.map((automation) => automation.id);
+    const [groups, failures] = await Promise.all([
+      prisma.automationRun.groupBy({
+        by: ["automationId", "status"],
+        where: { automationId: { in: ids } },
+        _count: { _all: true }
+      }),
+      prisma.automationRun.findMany({
+        where: { automationId: { in: ids }, status: "FAILED" },
+        orderBy: { createdAt: "desc" },
+        take: 30,
+        select: { automationId: true, error: true, createdAt: true, lead: { select: { id: true, name: true } } }
+      })
+    ]);
+    res.json(automations.map((automation) => ({
+      ...automation,
+      progress: Object.fromEntries(groups.filter((row) => row.automationId === automation.id).map((row) => [row.status.toLowerCase(), row._count._all])),
+      recentErrors: failures.filter((failure) => failure.automationId === automation.id).slice(0, 5)
+    })));
   })
 );
 
@@ -46,12 +70,12 @@ automationsRouter.patch(
   "/:id",
   requireRole("OWNER", "ADMIN"),
   asyncHandler(async (req, res) => {
+    const input = automationSchema.partial().extend({ status: z.enum(["ACTIVE", "INACTIVE"]).optional() }).parse(req.body);
     const data = {
-      ...req.body,
-      conditions: req.body.conditions === undefined ? undefined : toInputJson(req.body.conditions),
-      actionPayload: req.body.actionPayload === undefined ? undefined : toInputJson(req.body.actionPayload),
-      segment: req.body.segment === undefined ? undefined : toInputJson(req.body.segment),
-      allowedHours: req.body.allowedHours === undefined ? undefined : toInputJson(req.body.allowedHours)
+      ...input,
+      conditions: input.conditions === undefined ? undefined : toInputJson(input.conditions),
+      actionPayload: input.actionPayload === undefined ? undefined : toInputJson(input.actionPayload),
+      segment: input.segment === undefined ? undefined : toInputJson(input.segment)
     };
     const automation = await prisma.automation.update({ where: { id: req.params.id }, data });
     await auditLog(req, "AUTOMATION_UPDATED", { entityType: "Automation", entityId: req.params.id });

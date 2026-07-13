@@ -23,3 +23,13 @@ aiRouter.put(
     res.json({ ...updated, encryptedApiKey: Boolean(updated.encryptedApiKey) });
   })
 );
+
+aiRouter.post(
+  "/test",
+  requireRole("OWNER", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    const result = await aiService.testConnection();
+    await auditLog(req, "AI_CONNECTION_TESTED", { metadata: { model: result.model, ok: result.ok } });
+    res.json(result);
+  })
+);

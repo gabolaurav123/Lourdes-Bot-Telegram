@@ -3,13 +3,14 @@ import { prisma } from "../lib/prisma";
 import { asyncHandler } from "../lib/async";
 import { auditLog } from "../lib/audit";
 import { toInputJson } from "../lib/json";
+import { safeMediaSelect } from "../lib/media";
 
 export const templatesRouter = Router();
 
 templatesRouter.get(
   "/",
   asyncHandler(async (_req, res) => {
-    res.json(await prisma.template.findMany({ include: { image: true }, orderBy: { category: "asc" } }));
+    res.json(await prisma.template.findMany({ include: { image: { select: safeMediaSelect } }, orderBy: { category: "asc" } }));
   })
 );
 

@@ -20,6 +20,7 @@ import { mediaRouter } from "./routes/media";
 import { purchasesRouter } from "./routes/purchases";
 import { settingsRouter } from "./routes/settings";
 import { aiRouter } from "./routes/ai";
+import { prisma } from "./lib/prisma";
 
 export function createApp() {
   const app = express();
@@ -50,6 +51,21 @@ export function createApp() {
     })
   );
   app.use("/uploads", express.static(path.resolve(config.media.localDir)));
+  app.get("/media/:key", async (req, res, next) => {
+    try {
+      const asset = await prisma.mediaAsset.findUnique({ where: { key: req.params.key } });
+      if (!asset?.content || asset.deletedAt || (asset.expiresAt && asset.expiresAt <= new Date())) {
+        res.status(404).end();
+        return;
+      }
+      res.setHeader("Content-Type", asset.mimeType);
+      res.setHeader("Content-Length", String(asset.content.length));
+      res.setHeader("Cache-Control", asset.temporary ? "private, no-store" : "public, max-age=86400");
+      res.end(Buffer.from(asset.content));
+    } catch (error) {
+      next(error);
+    }
+  });
 
   app.get("/", (_req, res) => {
     res.json({

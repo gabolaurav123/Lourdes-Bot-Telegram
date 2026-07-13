@@ -67,6 +67,7 @@ enum CampaignStatus {
 
 enum CampaignRecipientStatus {
   PENDING
+  PROCESSING
   SENT
   SKIPPED
   FAILED
@@ -287,6 +288,7 @@ model CampaignRecipient {
   status      CampaignRecipientStatus @default(PENDING)
   scheduledAt DateTime?
   sentAt      DateTime?
+  lastAttemptAt DateTime?
   attempts    Int                     @default(0)
   error       String?
   createdAt   DateTime                @default(now())
@@ -295,6 +297,7 @@ model CampaignRecipient {
 
   @@unique([campaignId, leadId])
   @@index([status, scheduledAt])
+  @@index([campaignId, status])
 }
 
 model Automation {
@@ -348,6 +351,7 @@ model MediaAsset {
   width          Int?
   height         Int?
   checksum       String?
+  content        Bytes?
   temporary      Boolean     @default(false)
   expiresAt      DateTime?
   deletedAt      DateTime?

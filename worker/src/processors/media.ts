@@ -20,7 +20,7 @@ export async function cleanupTemporaryMedia() {
 
     await prisma.mediaAsset.update({
       where: { id: asset.id },
-      data: { deletedAt: new Date() }
+      data: { deletedAt: new Date(), content: null }
     });
   }
 }

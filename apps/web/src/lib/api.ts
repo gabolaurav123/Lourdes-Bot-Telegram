@@ -54,7 +54,38 @@ export type Campaign = {
   pauseSeconds: number;
   sensitive: boolean;
   startAt?: string | null;
+  segment?: Record<string, unknown>;
+  image?: MediaAsset | null;
   _count?: { recipients: number };
+  progress?: Record<string, number>;
+  recentErrors?: Array<{
+    error?: string | null;
+    attempts: number;
+    lastAttemptAt?: string | null;
+    lead: { id: string; name: string; username?: string | null };
+  }>;
+};
+
+export type SystemStatus = {
+  worker: {
+    online: boolean;
+    state: string;
+    startedAt?: string | null;
+    updatedAt?: string | null;
+    lastSuccessAt?: string | null;
+    lastError?: string | null;
+  };
+  telegram: {
+    configured: boolean;
+    connected: boolean;
+    status: string;
+    lastError?: string | null;
+  };
+  openai: {
+    configured: boolean;
+    enabled: boolean;
+    model: string;
+  };
 };
 
 export type Automation = {
@@ -69,6 +100,8 @@ export type Automation = {
   sensitive: boolean;
   allowRepeat: boolean;
   _count?: { runs: number };
+  progress?: Record<string, number>;
+  recentErrors?: Array<{ error?: string | null; createdAt: string; lead: { id: string; name: string } }>;
 };
 
 export type Template = {
@@ -153,7 +186,19 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   } catch {
     throw new Error("No se pudo conectar con la API. Revisa VITE_API_URL en la web y APP_URL/CORS_ORIGINS en la API.");
   }
-  if (!response.ok) throw new Error(await response.text());
+  if (!response.ok) {
+    const raw = await response.text();
+    try {
+      const parsed = JSON.parse(raw) as { error?: string; details?: { formErrors?: string[]; fieldErrors?: Record<string, string[]> } };
+      const fieldDetails = Object.entries(parsed.details?.fieldErrors ?? {})
+        .flatMap(([field, messages]) => messages.map((message) => `${field}: ${message}`))
+        .join("; ");
+      throw new Error([parsed.error, parsed.details?.formErrors?.join("; "), fieldDetails].filter(Boolean).join(". ") || `Error HTTP ${response.status}`);
+    } catch (error) {
+      if (error instanceof SyntaxError) throw new Error(raw || `Error HTTP ${response.status}`);
+      throw error;
+    }
+  }
   return (await response.json()) as T;
 }
 
@@ -169,8 +214,8 @@ export const api = {
   updateLead: (id: string, payload: Record<string, unknown>) => request<Lead>(`/api/leads/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   conversations: () => request<Conversation[]>("/api/conversations"),
   messages: (conversationId: string) => request<Message[]>(`/api/conversations/${conversationId}/messages`),
-  sendMessage: (conversationId: string, text: string) =>
-    request(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text }) }),
+  sendMessage: (conversationId: string, text?: string, mediaAssetId?: string, sensitive = false) =>
+    request(`/api/conversations/${conversationId}/messages`, { method: "POST", body: JSON.stringify({ text: text || undefined, mediaAssetId, sensitive }) }),
   telegramStatus: () => request<{ status: string; qrCodeDataUrl?: string | null; username?: string | null }>("/api/telegram/status"),
   startQr: () => request<{ status: string; qrCodeDataUrl?: string | null }>("/api/telegram/qr/start", { method: "POST" }),
   syncTelegram: (limit = 1000) => request<{ count: number }>("/api/telegram/sync", { method: "POST", body: JSON.stringify({ limit }) }),
@@ -178,8 +223,10 @@ export const api = {
   resetTelegramCrm: () => request<{ ok: boolean; deleted: Record<string, number> }>("/api/telegram/reset", { method: "POST", body: JSON.stringify({ confirm: "REINICIAR" }) }),
   campaigns: () => request<Campaign[]>("/api/campaigns"),
   createCampaign: (payload: Record<string, unknown>) => request<Campaign>("/api/campaigns", { method: "POST", body: JSON.stringify(payload) }),
+  updateCampaign: (id: string, payload: Record<string, unknown>) => request<Campaign>(`/api/campaigns/${id}`, { method: "PATCH", body: JSON.stringify(payload) }),
   activateCampaign: (id: string) => request<Campaign>(`/api/campaigns/${id}/activate`, { method: "POST" }),
   pauseCampaign: (id: string) => request<Campaign>(`/api/campaigns/${id}/pause`, { method: "POST" }),
+  cancelPendingCampaign: (id: string) => request<{ ok: boolean; cancelled: number }>(`/api/campaigns/${id}/cancel-pending`, { method: "POST" }),
   deleteCampaign: (id: string) => request(`/api/campaigns/${id}`, { method: "DELETE" }),
   previewCampaign: (id: string) => request<{ count: number; sample: Lead[] }>(`/api/campaigns/${id}/preview`),
   automations: () => request<Automation[]>("/api/automations"),
@@ -201,5 +248,7 @@ export const api = {
   createPurchase: (payload: Record<string, unknown>) => request<Purchase>("/api/purchases", { method: "POST", body: JSON.stringify(payload) }),
   updatePurchase: (id: string, status: string) => request<Purchase>(`/api/purchases/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   aiConfig: () => request<Record<string, unknown>>("/api/ai/config"),
-  updateAiConfig: (payload: Record<string, unknown>) => request<Record<string, unknown>>("/api/ai/config", { method: "PUT", body: JSON.stringify(payload) })
+  updateAiConfig: (payload: Record<string, unknown>) => request<Record<string, unknown>>("/api/ai/config", { method: "PUT", body: JSON.stringify(payload) }),
+  testAi: () => request<{ ok: boolean; model: string; response: string }>("/api/ai/test", { method: "POST" }),
+  systemStatus: () => request<SystemStatus>("/api/settings/system-status")
 };

@@ -8,6 +8,12 @@ function required(name: string, fallback?: string) {
   return value;
 }
 
+const nodeEnv = process.env.NODE_ENV ?? "development";
+
+function secret(name: string, developmentFallback: string) {
+  return nodeEnv === "production" ? required(name) : required(name, developmentFallback);
+}
+
 function cleanUrl(value: string) {
   return value.replace(/\/$/, "");
 }
@@ -22,13 +28,13 @@ function listEnv(name: string, fallback: string) {
 const appUrl = cleanUrl(process.env.APP_URL ?? "http://localhost:5173");
 
 export const config = {
-  nodeEnv: process.env.NODE_ENV ?? "development",
+  nodeEnv,
   apiPort: Number(process.env.PORT ?? process.env.API_PORT ?? 4000),
   appUrl,
   corsOrigins: listEnv("CORS_ORIGINS", appUrl),
   apiUrl: cleanUrl(process.env.API_URL ?? "http://localhost:4000"),
-  jwtSecret: required("JWT_SECRET", "dev-only-change-me-please-32-chars"),
-  encryptionKey: required("ENCRYPTION_KEY", "dev-only-change-me-please-32-chars"),
+  jwtSecret: secret("JWT_SECRET", "dev-only-change-me-please-32-chars"),
+  encryptionKey: secret("ENCRYPTION_KEY", "dev-only-change-me-please-32-chars"),
   telegram: {
     apiId: Number(process.env.TELEGRAM_API_ID ?? 0),
     apiHash: process.env.TELEGRAM_API_HASH ?? "",
@@ -41,7 +47,7 @@ export const config = {
     model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini"
   },
   media: {
-    storage: process.env.MEDIA_STORAGE ?? "local",
+    storage: process.env.MEDIA_STORAGE ?? "database",
     localDir: process.env.MEDIA_LOCAL_DIR ?? "storage/media",
     maxMb: Number(process.env.MEDIA_MAX_MB ?? 8),
     s3Endpoint: process.env.S3_ENDPOINT,

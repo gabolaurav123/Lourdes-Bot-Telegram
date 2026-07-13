@@ -49,6 +49,41 @@ async function executeAutomationRun(runId: string) {
         });
         break;
       }
+      case "REMOVE_TAG":
+      case "QUITAR_ETIQUETA": {
+        if (!payload.tag) throw new Error("Falta el nombre de la etiqueta a quitar");
+        const tag = await prisma.tag.findUnique({ where: { name: payload.tag } });
+        if (tag) {
+          await prisma.leadTag.deleteMany({ where: { leadId: run.leadId, tagId: tag.id } });
+        }
+        break;
+      }
+      case "CREATE_INTERNAL_TASK":
+      case "CREAR_TAREA_INTERNA": {
+        const conversation = await prisma.conversation.findFirst({ where: { leadId: run.leadId } });
+        if (!conversation) throw new Error("El lead no tiene conversacion para crear la tarea interna");
+        await prisma.message.create({
+          data: {
+            conversationId: conversation.id,
+            leadId: run.leadId,
+            direction: "INTERNAL",
+            status: "RECEIVED",
+            body: payload.text || `Tarea creada por automatizacion: ${run.automation.name}`
+          }
+        });
+        break;
+      }
+      case "NOTIFY_ADMIN":
+      case "NOTIFICAR_ADMIN":
+        await prisma.auditLog.create({
+          data: {
+            action: "ADMIN_NOTIFICATION_CREATED",
+            entityType: "Lead",
+            entityId: run.leadId,
+            metadata: { automationId: run.automationId, message: payload.text ?? run.automation.name }
+          }
+        });
+        break;
       case "STOP_AI":
       case "DETENER_IA":
         await prisma.lead.update({ where: { id: run.leadId }, data: { aiEnabled: false } });
@@ -77,9 +112,18 @@ async function executeAutomationRun(runId: string) {
       }
     });
   } catch (error) {
+    const message = error instanceof Error ? error.message : "Error desconocido";
     await prisma.automationRun.update({
       where: { id: run.id },
-      data: { status: "FAILED", error: error instanceof Error ? error.message : "Error desconocido" }
+      data: { status: "FAILED", error: message }
+    });
+    await prisma.auditLog.create({
+      data: {
+        action: "AUTOMATION_FAILED",
+        entityType: "AutomationRun",
+        entityId: run.id,
+        metadata: { automationId: run.automationId, leadId: run.leadId, error: message }
+      }
     });
   }
 }
