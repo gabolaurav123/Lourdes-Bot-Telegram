@@ -698,6 +698,9 @@ function InboxView(props: {
       : lead?.aiEnabled === false
         ? "IA pausada en este chat"
         : "IA automatica activa";
+  const latestMissingMediaId = [...props.messages]
+    .reverse()
+    .find((message) => message.direction === "INBOUND" && !message.body && !message.mediaAsset)?.id;
 
   useEffect(() => {
     setNoteDraft(lead?.notes ?? "");
@@ -787,7 +790,7 @@ function InboxView(props: {
               {props.messages.length === 0 && <p className="rounded-md bg-white px-3 py-2 text-sm text-zinc-500 shadow-sm">No hay mensajes guardados para esta conversacion.</p>}
               {props.messages.map((message) => (
                 <div key={message.id} className={clsx("max-w-[78%] rounded-lg px-3 py-2 text-sm shadow-sm", message.direction === "OUTBOUND" ? "ml-auto bg-pine text-white" : "bg-white text-ink")}>
-                  <MessageMediaPreview message={message} onRetry={async () => {
+                  <MessageMediaPreview message={message} allowRetry={Boolean(message.error || message.id === latestMissingMediaId)} onRetry={async () => {
                     try {
                       await props.onRetryMedia(message.id);
                     } catch (error) {
@@ -883,10 +886,10 @@ function InboxView(props: {
   );
 }
 
-function MessageMediaPreview({ message, onRetry }: { message: Message; onRetry: () => Promise<void> }) {
+function MessageMediaPreview({ message, allowRetry, onRetry }: { message: Message; allowRetry: boolean; onRetry: () => Promise<void> }) {
   const [failed, setFailed] = useState(false);
   const [retrying, setRetrying] = useState(false);
-  const canRetry = message.direction === "INBOUND" && (!message.mediaAsset || failed);
+  const canRetry = allowRetry && message.direction === "INBOUND" && (!message.mediaAsset || failed);
 
   async function retry() {
     setRetrying(true);
