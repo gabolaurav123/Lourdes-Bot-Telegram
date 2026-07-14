@@ -255,6 +255,7 @@ export const api = {
   updatePurchase: (id: string, status: string) => request<Purchase>(`/api/purchases/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   aiConfig: () => request<Record<string, unknown>>("/api/ai/config"),
   updateAiConfig: (payload: Record<string, unknown>) => request<Record<string, unknown>>("/api/ai/config", { method: "PUT", body: JSON.stringify(payload) }),
+  setAiEnabled: (enabled: boolean) => request<Record<string, unknown>>("/api/ai/enabled", { method: "PATCH", body: JSON.stringify({ enabled }) }),
   testAi: () => request<{ ok: boolean; model: string; response: string }>("/api/ai/test", { method: "POST" }),
   systemStatus: () => request<SystemStatus>("/api/settings/system-status")
 };

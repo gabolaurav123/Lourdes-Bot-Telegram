@@ -67,6 +67,8 @@ type AiConfig = Record<string, unknown> & {
   maxChars?: number;
   globalEnabled?: boolean;
   encryptedApiKey?: boolean;
+  apiKeyConfigured?: boolean;
+  apiKeySource?: "panel" | "environment" | "none";
   allowedHours?: { start?: string; end?: string; timezone?: string };
   forbiddenWords?: string[];
 };
@@ -1801,7 +1803,9 @@ function SettingsView(props: {
     globalEnabled: false
   });
   const [aiTest, setAiTest] = useState("");
+  const [aiSaveStatus, setAiSaveStatus] = useState("");
   const [testingAi, setTestingAi] = useState(false);
+  const [switchingAi, setSwitchingAi] = useState(false);
 
   useEffect(() => {
     setAiForm({
@@ -1822,7 +1826,9 @@ function SettingsView(props: {
 
   async function saveAi(event: FormEvent) {
     event.preventDefault();
+    setAiSaveStatus("");
     try {
+      const replacingKey = Boolean(aiForm.apiKey.trim());
       await api.updateAiConfig({
         model: aiForm.model,
         apiKey: aiForm.apiKey || undefined,
@@ -1835,9 +1841,30 @@ function SettingsView(props: {
         forbiddenWords: aiForm.forbiddenWords.split(",").map((word) => word.trim()).filter(Boolean),
         globalEnabled: aiForm.globalEnabled
       });
+      setAiForm((current) => ({ ...current, apiKey: "" }));
       await props.onReloadAi();
+      setAiSaveStatus(replacingKey
+        ? "API key guardada y cifrada. El campo queda vacio porque la clave no se vuelve a mostrar."
+        : "Ajustes de IA guardados correctamente.");
     } catch (error) {
       props.onError(messageFromError(error));
+    }
+  }
+
+  async function toggleGlobalAi(enabled: boolean) {
+    setSwitchingAi(true);
+    setAiSaveStatus("");
+    try {
+      await api.setAiEnabled(enabled);
+      setAiForm((current) => ({ ...current, globalEnabled: enabled }));
+      await props.onReloadAll();
+      setAiSaveStatus(enabled
+        ? "Respuestas automaticas activadas para chats privados entrantes permitidos."
+        : "Respuestas automaticas desactivadas globalmente.");
+    } catch (error) {
+      props.onError(messageFromError(error));
+    } finally {
+      setSwitchingAi(false);
     }
   }
 
@@ -1922,22 +1949,51 @@ function SettingsView(props: {
       </div>
 
       <form onSubmit={saveAi} className="rounded-lg border border-line bg-white p-4 shadow-soft">
+        {(props.aiConfig.apiKeyConfigured || props.aiConfig.encryptedApiKey) && (
+          <div className="mb-4 flex items-start gap-3 rounded-md border border-pine/20 bg-pine/5 px-3 py-3 text-sm text-pine">
+            <ShieldCheck className="mt-0.5 shrink-0" size={17} />
+            <div>
+              <p className="font-semibold">API key de OpenAI guardada y cifrada</p>
+              <p className="mt-1 text-xs text-zinc-600">Por seguridad nunca se vuelve a mostrar. Escribe otra clave solamente para reemplazarla.</p>
+            </div>
+          </div>
+        )}
         <div className="grid gap-4 md:grid-cols-2">
           <SettingInput label="Modelo IA" icon={Bot} value={aiForm.model} onChange={(value) => setAiForm({ ...aiForm, model: value })} />
           <SettingInput label="Temperatura" icon={WandSparkles} value={aiForm.temperature} onChange={(value) => setAiForm({ ...aiForm, temperature: value })} type="number" />
           <SettingInput label="Max tokens" icon={CalendarClock} value={aiForm.maxTokens} onChange={(value) => setAiForm({ ...aiForm, maxTokens: value })} type="number" />
           <SettingInput label="Max caracteres" icon={MessageSquareText} value={aiForm.maxChars} onChange={(value) => setAiForm({ ...aiForm, maxChars: value })} type="number" />
           <SettingInput label="Tono" icon={WandSparkles} value={aiForm.tone} onChange={(value) => setAiForm({ ...aiForm, tone: value })} />
-          <SettingInput label={props.aiConfig.encryptedApiKey ? "Nueva API key OpenAI" : "API key OpenAI"} icon={KeyRound} value={aiForm.apiKey} onChange={(value) => setAiForm({ ...aiForm, apiKey: value })} type="password" />
+          <SettingInput
+            label={(props.aiConfig.apiKeyConfigured || props.aiConfig.encryptedApiKey) ? "Reemplazar API key OpenAI" : "API key OpenAI"}
+            icon={KeyRound}
+            value={aiForm.apiKey}
+            onChange={(value) => setAiForm({ ...aiForm, apiKey: value })}
+            type="password"
+            placeholder={(props.aiConfig.apiKeyConfigured || props.aiConfig.encryptedApiKey) ? "Clave guardada - escribe solo para reemplazarla" : "sk-..."}
+          />
           <SettingInput label="Responder desde" icon={CalendarClock} value={aiForm.allowedStart} onChange={(value) => setAiForm({ ...aiForm, allowedStart: value })} type="time" />
           <SettingInput label="Responder hasta" icon={CalendarClock} value={aiForm.allowedEnd} onChange={(value) => setAiForm({ ...aiForm, allowedEnd: value })} type="time" />
           <SettingInput label="Zona horaria" icon={CalendarClock} value={aiForm.timezone} onChange={(value) => setAiForm({ ...aiForm, timezone: value })} />
           <SettingInput label="Palabras prohibidas (separadas por coma)" icon={ArchiveX} value={aiForm.forbiddenWords} onChange={(value) => setAiForm({ ...aiForm, forbiddenWords: value })} />
         </div>
-        <label className="mt-4 flex items-center gap-2 rounded-md border border-line px-3 py-2 text-sm">
-          <input type="checkbox" checked={aiForm.globalEnabled} onChange={(event) => setAiForm({ ...aiForm, globalEnabled: event.target.checked })} />
-          IA global activa
-        </label>
+        <div className="mt-4 flex items-center justify-between gap-4 rounded-md border border-line bg-panel px-4 py-3">
+          <div>
+            <p className="text-sm font-semibold">Respuestas automaticas de IA</p>
+            <p className="mt-1 text-xs text-zinc-500">Responde todos los chats privados entrantes permitidos, excepto chats pausados o usuarios que pidieron stop.</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={aiForm.globalEnabled}
+            aria-label="Respuestas automaticas de IA"
+            disabled={switchingAi}
+            onClick={() => void toggleGlobalAi(!aiForm.globalEnabled)}
+            className={clsx("relative h-7 w-12 shrink-0 rounded-full transition-colors disabled:opacity-50", aiForm.globalEnabled ? "bg-pine" : "bg-zinc-300")}
+          >
+            <span className={clsx("absolute top-1 h-5 w-5 rounded-full bg-white shadow-sm transition-transform", aiForm.globalEnabled ? "translate-x-0 left-6" : "left-1")} />
+          </button>
+        </div>
         <label className="field-label mt-4">Prompt base</label>
         <textarea className="mt-2 min-h-40 w-full rounded-md border border-line p-3 text-sm outline-none focus:border-pine" value={aiForm.promptBase} onChange={(event) => setAiForm({ ...aiForm, promptBase: event.target.value })} />
         <div className="mt-4 flex flex-wrap gap-2">
@@ -1951,16 +2007,17 @@ function SettingsView(props: {
           </button>
         </div>
         {aiTest && <p className="mt-3 rounded-md bg-pine/10 px-3 py-2 text-sm text-pine">{aiTest}</p>}
+        {aiSaveStatus && <p className="mt-3 rounded-md border border-pine/20 bg-pine/5 px-3 py-2 text-sm text-pine">{aiSaveStatus}</p>}
       </form>
     </section>
   );
 }
 
-function SettingInput({ label, value, onChange, icon: Icon, type = "text" }: { label: string; value: string; onChange: (value: string) => void; icon: IconType; type?: string }) {
+function SettingInput({ label, value, onChange, icon: Icon, type = "text", placeholder }: { label: string; value: string; onChange: (value: string) => void; icon: IconType; type?: string; placeholder?: string }) {
   return (
     <label className="block">
       <span className="field-label flex items-center gap-2"><Icon size={15} />{label}</span>
-      <input className="field mt-2" value={value} onChange={(event) => onChange(event.target.value)} type={type} />
+      <input className="field mt-2" value={value} onChange={(event) => onChange(event.target.value)} type={type} placeholder={placeholder} />
     </label>
   );
 }

@@ -34,7 +34,7 @@ class AiService {
   }
 
   async getConfig() {
-    return prisma.aiConfig.upsert({
+    const aiConfig = await prisma.aiConfig.upsert({
       where: { id: "default" },
       update: {},
       create: {
@@ -43,6 +43,11 @@ class AiService {
         promptBase: DEFAULT_AI_PROMPT,
         globalEnabled: config.nodeEnv === "development" ? false : config.openai.apiKey.length > 0
       }
+    });
+    if (aiConfig.promptBase.trim()) return aiConfig;
+    return prisma.aiConfig.update({
+      where: { id: aiConfig.id },
+      data: { promptBase: DEFAULT_AI_PROMPT }
     });
   }
 
@@ -59,12 +64,13 @@ class AiService {
     globalEnabled?: boolean;
   }) {
     const apiKey = input.apiKey?.trim();
+    const promptBase = input.promptBase?.trim() || undefined;
     return prisma.aiConfig.upsert({
       where: { id: "default" },
       create: {
         id: "default",
         model: input.model ?? config.openai.model,
-        promptBase: input.promptBase ?? DEFAULT_AI_PROMPT,
+        promptBase: promptBase ?? DEFAULT_AI_PROMPT,
         encryptedApiKey: apiKey ? encryptSecret(apiKey) : undefined,
         temperature: input.temperature ?? 0.4,
         maxTokens: input.maxTokens ?? 400,
@@ -76,7 +82,7 @@ class AiService {
       },
       update: {
         model: input.model,
-        promptBase: input.promptBase,
+        promptBase,
         encryptedApiKey: apiKey ? encryptSecret(apiKey) : undefined,
         temperature: input.temperature,
         maxTokens: input.maxTokens,
@@ -89,10 +95,25 @@ class AiService {
     });
   }
 
+  async setGlobalEnabled(enabled: boolean) {
+    const aiConfig = await this.getConfig();
+    const apiKey = decryptSecret(aiConfig.encryptedApiKey) || config.openai.apiKey;
+    if (enabled && !apiKey) {
+      const error = new Error("Guarda una API key de OpenAI antes de activar las respuestas automaticas.");
+      (error as Error & { status?: number }).status = 400;
+      throw error;
+    }
+    return prisma.aiConfig.update({
+      where: { id: aiConfig.id },
+      data: { globalEnabled: enabled }
+    });
+  }
+
   async generateReply(lead: Lead, conversation: Conversation, inboundText: string): Promise<AiReplyResult> {
     const aiConfig = await this.getConfig();
     if (!aiConfig.globalEnabled) return { text: null, reason: "La IA global esta apagada" };
     if (!lead.aiEnabled) return { text: null, reason: "La IA esta pausada para este lead" };
+    if (conversation.type !== "PRIVATE") return { text: null, reason: "La IA automatica solo responde chats privados" };
     if (containsStopPhrase(inboundText)) return { text: null, reason: "El usuario solicito detener los mensajes" };
     if (!isWithinAllowedHours(aiConfig.allowedHours)) return { text: null, reason: "Fuera del horario permitido para la IA" };
 

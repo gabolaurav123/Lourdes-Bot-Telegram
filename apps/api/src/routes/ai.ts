@@ -6,11 +6,20 @@ import { aiService } from "../services/ai.service";
 
 export const aiRouter = Router();
 
+function publicConfig(aiConfig: Awaited<ReturnType<typeof aiService.getConfig>>) {
+  return {
+    ...aiConfig,
+    encryptedApiKey: Boolean(aiConfig.encryptedApiKey),
+    apiKeyConfigured: Boolean(aiConfig.encryptedApiKey || process.env.OPENAI_API_KEY),
+    apiKeySource: aiConfig.encryptedApiKey ? "panel" : process.env.OPENAI_API_KEY ? "environment" : "none"
+  };
+}
+
 aiRouter.get(
   "/config",
   asyncHandler(async (_req, res) => {
     const config = await aiService.getConfig();
-    res.json({ ...config, encryptedApiKey: Boolean(config.encryptedApiKey) });
+    res.json(publicConfig(config));
   })
 );
 
@@ -20,7 +29,21 @@ aiRouter.put(
   asyncHandler(async (req, res) => {
     const updated = await aiService.updateConfig(req.body);
     await auditLog(req, "AI_CONFIG_UPDATED");
-    res.json({ ...updated, encryptedApiKey: Boolean(updated.encryptedApiKey) });
+    res.json(publicConfig(updated));
+  })
+);
+
+aiRouter.patch(
+  "/enabled",
+  requireRole("OWNER", "ADMIN"),
+  asyncHandler(async (req, res) => {
+    if (typeof req.body?.enabled !== "boolean") {
+      res.status(400).json({ error: "El campo enabled debe ser verdadero o falso" });
+      return;
+    }
+    const updated = await aiService.setGlobalEnabled(req.body.enabled);
+    await auditLog(req, req.body.enabled ? "AI_GLOBAL_ENABLED" : "AI_GLOBAL_DISABLED");
+    res.json(publicConfig(updated));
   })
 );
 
