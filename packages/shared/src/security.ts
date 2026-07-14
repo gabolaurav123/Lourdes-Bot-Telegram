@@ -32,6 +32,13 @@ export function containsStopPhrase(message: string, stopPhrases: readonly string
   });
 }
 
+export function isLegacyFalseStop(message: string, stopPhrases: readonly string[] = STOP_PHRASES) {
+  const normalized = normalizeText(message);
+  if (!normalized || containsStopPhrase(message, stopPhrases)) return false;
+
+  return stopPhrases.some((phrase) => normalized.includes(normalizeText(phrase)));
+}
+
 export function asksForAdultConfirmation(message: string) {
   const normalized = normalizeText(message);
   return normalized.includes("mayor de edad") || normalized.includes("18 anos") || normalized.includes("+18");

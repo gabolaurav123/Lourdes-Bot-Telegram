@@ -5,7 +5,7 @@ import { CustomFile } from "telegram/client/uploads";
 import { NewMessage, type NewMessageEvent } from "telegram/events";
 import { StringSession } from "telegram/sessions";
 import type { ConversationType, Lead, MessageStatus } from "@prisma/client";
-import { confirmsAdultAge, containsStopPhrase } from "@crm/shared";
+import { confirmsAdultAge, containsStopPhrase, isLegacyFalseStop } from "@crm/shared";
 import { config } from "../config";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { prisma } from "../lib/prisma";
@@ -284,7 +284,80 @@ class TelegramService {
       count += 1;
     }
 
-    return { count };
+    const repairedFalseStops = await this.repairLegacyFalseStops();
+
+    return { count, repairedFalseStops };
+  }
+
+  async repairLegacyFalseStops() {
+    const stoppedLeads = await prisma.lead.findMany({
+      where: {
+        status: "NO_VOLVER_A_ESCRIBIR",
+        lastInboundMessage: { not: null },
+        isGroup: false,
+        isChannel: false
+      },
+      select: {
+        id: true,
+        lastInboundMessage: true,
+        messages: {
+          where: { direction: "INBOUND" },
+          orderBy: { createdAt: "desc" },
+          take: 100,
+          select: { body: true }
+        }
+      }
+    });
+    if (!stoppedLeads.length) return 0;
+
+    const manualStopLogs = await prisma.auditLog.findMany({
+      where: {
+        action: "LEAD_UPDATED",
+        entityType: "Lead",
+        entityId: { in: stoppedLeads.map((lead) => lead.id) }
+      },
+      select: { entityId: true, metadata: true }
+    });
+    const manuallyStopped = new Set(
+      manualStopLogs
+        .filter((log) => {
+          const metadata = log.metadata as Record<string, unknown>;
+          return metadata.status === "NO_VOLVER_A_ESCRIBIR";
+        })
+        .map((log) => log.entityId)
+        .filter((id): id is string => Boolean(id))
+    );
+    const candidates = stoppedLeads.filter((lead) => {
+      if (manuallyStopped.has(lead.id)) return false;
+      const inboundTexts = [lead.lastInboundMessage, ...lead.messages.map((message) => message.body)]
+        .filter((text): text is string => Boolean(text));
+      if (inboundTexts.some((text) => containsStopPhrase(text))) return false;
+      return inboundTexts.some((text) => isLegacyFalseStop(text));
+    });
+    if (!candidates.length) return 0;
+
+    const repairedAt = new Date().toISOString();
+    await prisma.$transaction([
+      prisma.lead.updateMany({
+        where: { id: { in: candidates.map((lead) => lead.id) }, status: "NO_VOLVER_A_ESCRIBIR" },
+        data: {
+          status: "RESPONDIO",
+          aiEnabled: true,
+          userWroteFirst: true,
+          conversationActive: true
+        }
+      }),
+      prisma.auditLog.createMany({
+        data: candidates.map((lead) => ({
+          action: "LEGACY_FALSE_STOP_REPAIRED",
+          entityType: "Lead",
+          entityId: lead.id,
+          metadata: { repairedAt }
+        }))
+      })
+    ]);
+
+    return candidates.length;
   }
 
   async sendMessageFromPanel(input: {
@@ -450,6 +523,7 @@ class TelegramService {
 
   private async handleIncoming(event: NewMessageEvent) {
     const message = event.message;
+    if (!message.isPrivate) return;
     const chatId = String(message.chatId?.valueOf?.() ?? message.peerId?.className ?? "");
     if (!chatId) return;
 
@@ -519,6 +593,21 @@ class TelegramService {
       });
       await automationService.cancelPendingForLead(lead.id);
       return;
+    }
+
+    if (lead.status === "NO_VOLVER_A_ESCRIBIR") {
+      await prisma.lead.update({
+        where: { id: lead.id },
+        data: { status: "RESPONDIO", aiEnabled: true, userWroteFirst: true, conversationActive: true }
+      });
+      await prisma.auditLog.create({
+        data: {
+          action: "LEAD_REENGAGED_FROM_INBOUND",
+          entityType: "Lead",
+          entityId: lead.id,
+          metadata: { conversationId: conversation.id }
+        }
+      });
     }
 
     await automationService.scheduleForTrigger("NEW_MESSAGE_RECEIVED", lead.id, { text });
