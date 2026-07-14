@@ -401,10 +401,16 @@ class TelegramService {
   async retryIncomingMedia(messageId: string) {
     const stored = await prisma.message.findUniqueOrThrow({
       where: { id: messageId },
-      include: { conversation: true }
+      include: { conversation: true, mediaAsset: true }
     });
     if (stored.direction !== "INBOUND") throw new Error("Solo se pueden recuperar imagenes recibidas");
-    if (stored.mediaAssetId) return { ok: true, mediaAssetId: stored.mediaAssetId };
+    const currentMediaAvailable = Boolean(
+      stored.mediaAsset &&
+      !stored.mediaAsset.deletedAt &&
+      (!stored.mediaAsset.expiresAt || stored.mediaAsset.expiresAt > new Date()) &&
+      (stored.mediaAsset.storage !== "database" || stored.mediaAsset.content)
+    );
+    if (stored.mediaAssetId && currentMediaAvailable) return { ok: true, mediaAssetId: stored.mediaAssetId };
     if (!stored.telegramMessageId) throw new Error("El mensaje no tiene un ID de Telegram para recuperar la imagen");
 
     const telegramMessageId = Number(stored.telegramMessageId);
