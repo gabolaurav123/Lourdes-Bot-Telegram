@@ -5,7 +5,7 @@ import { CustomFile } from "telegram/client/uploads";
 import { NewMessage, type NewMessageEvent } from "telegram/events";
 import { StringSession } from "telegram/sessions";
 import type { ConversationType, Lead, MessageStatus } from "@prisma/client";
-import { confirmsAdultAge, containsStopPhrase, isLegacyFalseStop } from "@crm/shared";
+import { EXCLUDED_LEAD_STATUSES, confirmsAdultAge, containsStopPhrase, isLegacyFalseStop } from "@crm/shared";
 import { config } from "../config";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { prisma } from "../lib/prisma";
@@ -46,6 +46,7 @@ class TelegramService {
   private client?: TelegramClient;
   private loginPromise?: Promise<unknown>;
   private readonly entityCache = new Map<string, TelegramTarget>();
+  private readonly aiReplyLocks = new Set<string>();
 
   private ensureConfig() {
     if (!config.telegram.apiId || !config.telegram.apiHash) {
@@ -360,6 +361,82 @@ class TelegramService {
     return candidates.length;
   }
 
+  async processPendingAiReplies(limit = 10) {
+    const [session, aiConfig] = await Promise.all([
+      prisma.telegramSession.findUnique({
+        where: { label: config.telegram.sessionLabel },
+        select: { status: true }
+      }),
+      aiService.getConfig()
+    ]);
+    if (session?.status !== "CONNECTED" || !aiConfig.globalEnabled) {
+      return { checked: 0, sent: 0, failed: 0 };
+    }
+
+    const conversations = await prisma.conversation.findMany({
+      where: {
+        type: "PRIVATE",
+        responded: false,
+        leadId: { not: null },
+        lead: {
+          is: {
+            aiEnabled: true,
+            userWroteFirst: true,
+            conversationActive: true,
+            status: { notIn: [...EXCLUDED_LEAD_STATUSES] }
+          }
+        },
+        messages: { some: { direction: "INBOUND" } }
+      },
+      select: { id: true },
+      orderBy: { lastMessageAt: "asc" },
+      take: Math.max(limit * 5, 25)
+    });
+
+    let checked = 0;
+    let sent = 0;
+    let failed = 0;
+    for (const conversation of conversations) {
+      if (checked >= limit) break;
+      const result = await this.replyToLatestPendingInbound(conversation.id, false);
+      if (result === "not_pending" || result === "locked") continue;
+      checked += 1;
+      if (result === "sent") sent += 1;
+      if (result === "failed") failed += 1;
+    }
+
+    return { checked, sent, failed };
+  }
+
+  async repairPendingConversationFlags() {
+    const conversations = await prisma.conversation.findMany({
+      where: { type: "PRIVATE", leadId: { not: null }, messages: { some: { direction: "INBOUND" } } },
+      select: {
+        id: true,
+        messages: {
+          where: { direction: { in: ["INBOUND", "OUTBOUND"] } },
+          orderBy: { createdAt: "desc" },
+          take: 30
+        }
+      }
+    });
+    const pendingIds = conversations.flatMap((conversation) => {
+      const latestInbound = conversation.messages.find((message) => message.direction === "INBOUND");
+      if (!latestInbound) return [];
+      const sentAfter = conversation.messages.some(
+        (message) => message.direction === "OUTBOUND" && message.status === "SENT" && message.createdAt > latestInbound.createdAt
+      );
+      return sentAfter ? [] : [conversation.id];
+    });
+    if (!pendingIds.length) return 0;
+
+    const result = await prisma.conversation.updateMany({
+      where: { id: { in: pendingIds } },
+      data: { responded: false }
+    });
+    return result.count;
+  }
+
   async sendMessageFromPanel(input: {
     conversationId: string;
     text?: string;
@@ -441,7 +518,7 @@ class TelegramService {
     await prisma.conversation.update({
       where: { id: conversation.id },
       data: {
-        responded: true,
+        responded: status === "SENT",
         conversationActive: true,
         lastMessage: input.text ?? "[imagen]",
         lastMessageAt: new Date()
@@ -554,6 +631,7 @@ class TelegramService {
         lastMessage: text || (expectsImage ? "[imagen]" : "[media]"),
         lastMessageAt: new Date(),
         unreadCount: { increment: 1 },
+        responded: false,
         userWroteFirst: true,
         conversationActive: true
       },
@@ -572,7 +650,7 @@ class TelegramService {
 
     const lead = await this.ensureLeadForConversation(conversation.id, chatId, conversation.name, text);
 
-    await prisma.message.create({
+    const storedMessage = await prisma.message.create({
       data: {
         telegramMessageId: String(message.id),
         conversationId: conversation.id,
@@ -612,66 +690,155 @@ class TelegramService {
 
     await automationService.scheduleForTrigger("NEW_MESSAGE_RECEIVED", lead.id, { text });
 
-    let updatedLead = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
-    if (!updatedLead.ageConfirmed) {
-      const previousOutbound = await prisma.message.findFirst({
-        where: { conversationId: conversation.id, direction: "OUTBOUND" },
-        orderBy: { createdAt: "desc" },
-        select: { body: true }
-      });
-      if (confirmsAdultAge(text, previousOutbound?.body ?? "")) {
-        updatedLead = await prisma.lead.update({
-          where: { id: lead.id },
-          data: { ageConfirmed: true }
-        });
-        await prisma.auditLog.create({
-          data: {
-            action: "LEAD_AGE_CONFIRMED_FROM_REPLY",
-            entityType: "Lead",
-            entityId: lead.id,
-            metadata: { conversationId: conversation.id }
-          }
-        });
-        await automationService.scheduleForTrigger("AGE_CONFIRMED", lead.id);
-      }
-    }
+    await this.replyToLatestPendingInbound(conversation.id, true, storedMessage.id);
+  }
+
+  private async replyToLatestPendingInbound(conversationId: string, auditSkipped: boolean, expectedInboundId?: string) {
+    if (this.aiReplyLocks.has(conversationId)) return "locked" as const;
+    this.aiReplyLocks.add(conversationId);
+
     try {
-      const aiReply = await aiService.generateReply(updatedLead, conversation, text);
-      if (aiReply.text) {
-        await this.sendMessageFromPanel({
-          conversationId: conversation.id,
-          text: aiReply.text,
-          aiGenerated: true,
-          intent: "ai_reply"
-        });
-        await prisma.auditLog.create({
-          data: {
-            action: "AI_REPLY_SENT",
-            entityType: "Lead",
-            entityId: updatedLead.id,
-            metadata: { conversationId: conversation.id }
+      const conversation = await prisma.conversation.findUnique({
+        where: { id: conversationId },
+        include: {
+          lead: true,
+          messages: {
+            where: { direction: { in: ["INBOUND", "OUTBOUND"] } },
+            orderBy: { createdAt: "desc" },
+            take: 30
           }
+        }
+      });
+      if (!conversation?.lead || conversation.type !== "PRIVATE") return "not_pending" as const;
+
+      const latestInbound = conversation.messages.find((message) => message.direction === "INBOUND");
+      if (!latestInbound || (expectedInboundId && latestInbound.id !== expectedInboundId)) return "not_pending" as const;
+      const sentAfterInbound = conversation.messages.find(
+        (message) => message.direction === "OUTBOUND" && message.status === "SENT" && message.createdAt > latestInbound.createdAt
+      );
+      if (sentAfterInbound) {
+        if (!sentAfterInbound.aiGenerated) return "not_pending" as const;
+        const replyLogs = await prisma.auditLog.findMany({
+          where: { action: "AI_REPLY_SENT", entityType: "Lead", entityId: conversation.lead.id },
+          orderBy: { createdAt: "desc" },
+          take: 30,
+          select: { metadata: true }
         });
-      } else {
-        await prisma.auditLog.create({
-          data: {
-            action: "AI_REPLY_SKIPPED",
-            entityType: "Lead",
-            entityId: updatedLead.id,
-            metadata: { conversationId: conversation.id, reason: aiReply.reason ?? "Sin respuesta" }
-          }
+        const matchedLog = replyLogs.find((log) => {
+          const metadata = log.metadata as Record<string, unknown>;
+          return metadata.outboundMessageId === sentAfterInbound.id;
         });
+        if (!matchedLog) return "not_pending" as const;
+        const metadata = matchedLog.metadata as Record<string, unknown>;
+        if (metadata.inboundMessageId === latestInbound.id) return "not_pending" as const;
       }
+
+      const inboundText = latestInbound.body ?? "[imagen]";
+      if (containsStopPhrase(inboundText)) return "not_pending" as const;
+
+      let lead = conversation.lead;
+      if (!lead.ageConfirmed) {
+        const previousOutbound = conversation.messages.find(
+          (message) => message.direction === "OUTBOUND" && message.createdAt < latestInbound.createdAt
+        );
+        if (confirmsAdultAge(inboundText, previousOutbound?.body ?? "")) {
+          lead = await prisma.lead.update({
+            where: { id: lead.id },
+            data: { ageConfirmed: true }
+          });
+          await prisma.auditLog.create({
+            data: {
+              action: "LEAD_AGE_CONFIRMED_FROM_REPLY",
+              entityType: "Lead",
+              entityId: lead.id,
+              metadata: { conversationId }
+            }
+          });
+          await automationService.scheduleForTrigger("AGE_CONFIRMED", lead.id);
+        }
+      }
+
+      const failedReply = conversation.messages.find(
+        (message) => message.direction === "OUTBOUND" && message.aiGenerated && message.status === "FAILED" && message.createdAt > latestInbound.createdAt
+      );
+      const generated = failedReply?.body
+        ? { text: failedReply.body, reason: undefined }
+        : await aiService.generateReply(lead, conversation, inboundText);
+      if (!generated.text) {
+        if (auditSkipped) {
+          await prisma.auditLog.create({
+            data: {
+              action: "AI_REPLY_SKIPPED",
+              entityType: "Lead",
+              entityId: lead.id,
+              metadata: { conversationId, reason: generated.reason ?? "Sin respuesta" }
+            }
+          });
+        }
+        return "skipped" as const;
+      }
+
+      const [newestInbound, alreadyAnswered] = await Promise.all([
+        prisma.message.findFirst({
+          where: { conversationId, direction: "INBOUND" },
+          orderBy: { createdAt: "desc" },
+          select: { id: true }
+        }),
+        prisma.message.findFirst({
+          where: {
+            conversationId,
+            direction: "OUTBOUND",
+            status: "SENT",
+            createdAt: { gt: latestInbound.createdAt }
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true, aiGenerated: true }
+        })
+      ]);
+      if (newestInbound?.id !== latestInbound.id) return "not_pending" as const;
+      if (alreadyAnswered && !alreadyAnswered.aiGenerated) return "not_pending" as const;
+
+      const outbound = await this.sendMessageFromPanel({
+        conversationId,
+        text: generated.text,
+        aiGenerated: true,
+        intent: "ai_reply"
+      });
+      await prisma.auditLog.create({
+        data: {
+          action: "AI_REPLY_SENT",
+          entityType: "Lead",
+          entityId: lead.id,
+          metadata: {
+            conversationId,
+            inboundMessageId: latestInbound.id,
+            outboundMessageId: outbound.id,
+            pendingSweep: !auditSkipped
+          }
+        }
+      });
+      const newestInboundAfterSend = await prisma.message.findFirst({
+        where: { conversationId, direction: "INBOUND" },
+        orderBy: { createdAt: "desc" },
+        select: { id: true }
+      });
+      if (newestInboundAfterSend?.id !== latestInbound.id) {
+        await prisma.conversation.update({ where: { id: conversationId }, data: { responded: false } });
+      }
+      return "sent" as const;
     } catch (error) {
       const errorText = error instanceof Error ? error.message : String(error);
       await prisma.auditLog.create({
         data: {
           action: "AI_REPLY_FAILED",
-          entityType: "Lead",
-          entityId: updatedLead.id,
-          metadata: { conversationId: conversation.id, error: errorText }
+          entityType: "Conversation",
+          entityId: conversationId,
+          metadata: { conversationId, error: errorText, pendingSweep: !auditSkipped }
         }
-      });
+      }).catch(() => undefined);
+      return "failed" as const;
+    } finally {
+      this.aiReplyLocks.delete(conversationId);
     }
   }
 
