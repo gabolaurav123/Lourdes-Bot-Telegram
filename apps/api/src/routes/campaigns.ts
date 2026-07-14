@@ -56,7 +56,7 @@ campaignsRouter.patch(
   asyncHandler(async (req, res) => {
     const existing = await prisma.campaign.findUniqueOrThrow({ where: { id: req.params.id } });
     if (existing.status === "ACTIVE" || existing.status === "SCHEDULED") {
-      res.status(409).json({ error: "Pausa la campana antes de editarla." });
+      res.status(409).json({ error: "Pausa la campaña antes de editarla." });
       return;
     }
     const input = campaignSchema.partial().extend({

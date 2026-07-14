@@ -83,7 +83,7 @@ const sections: { id: Section; label: string; icon: IconType }[] = [
   { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
   { id: "inbox", label: "Inbox", icon: Inbox },
   { id: "leads", label: "Leads", icon: UsersRound },
-  { id: "campaigns", label: "Campanas", icon: Send },
+  { id: "campaigns", label: "Campañas", icon: Send },
   { id: "automations", label: "Automatizaciones", icon: Workflow },
   { id: "templates", label: "Plantillas", icon: MessageSquareText },
   { id: "media", label: "Media", icon: GalleryHorizontalEnd },
@@ -610,7 +610,7 @@ function Dashboard({ stats, leads, telegram, onStartQr }: { stats: StatMap; lead
     ["Conversaciones", stats.activeConversations, Inbox, "ink"],
     ["Opt-in", stats.optIn, ShieldCheck, "pine"],
     ["IA hoy", stats.aiToday, Bot, "coral"],
-    ["Campanas activas", stats.activeCampaigns, Send, "amber"],
+    ["Campañas activas", stats.activeCampaigns, Send, "amber"],
     ["Compras hoy", stats.purchasesToday, CircleDollarSign, "pine"],
     ["Errores", stats.failedMessages, ArchiveX, "coral"]
   ] as const;
@@ -1055,7 +1055,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
     event.preventDefault();
     const name = form.name.trim();
     if (name.length < 2) {
-      onError("El nombre de la campana debe tener al menos 2 caracteres.");
+      onError("El nombre de la campaña debe tener al menos 2 caracteres.");
       return;
     }
     setSaving(true);
@@ -1155,7 +1155,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
       <form onSubmit={submit} className="order-2 rounded-lg border border-line bg-white p-4 shadow-soft xl:order-1">
         <div className="flex items-center gap-3">
           <span className="grid h-9 w-9 place-items-center rounded-md bg-pine/10 text-pine"><Send size={18} /></span>
-          <h2 className="text-sm font-semibold">{editingId ? "Editar campana" : "Nueva campana permitida"}</h2>
+          <h2 className="text-sm font-semibold">{editingId ? "Editar campaña" : "Nueva campaña permitida"}</h2>
         </div>
         <label className="field-label mt-4">Nombre</label>
         <input className="field" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} required minLength={2} />
@@ -1172,7 +1172,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
             <span>Seguimiento: <strong>{leadCounts.followUp}</strong></span>
             <span>Elegibles: <strong>{leadCounts.eligible}</strong></span>
           </div>
-          <p className="mt-2 text-xs">Las campanas no usan todos los chats: solo leads con opt-in, permiso de seguimiento, conversacion valida y sin estado excluido.</p>
+          <p className="mt-2 text-xs">Las campañas solo usan leads con opt-in, permiso de seguimiento, conversación válida y sin estado excluido.</p>
         </div>
         <label className="field-label mt-3">Mensaje</label>
         <textarea className="min-h-32 w-full rounded-md border border-line px-3 py-2 text-sm outline-none focus:border-pine" value={form.message} onChange={(event) => setForm({ ...form, message: event.target.value })} required />
@@ -1217,7 +1217,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
           ) : (
             <label className="button-secondary inline-flex cursor-pointer">
               <Upload size={16} />
-              Subir imagen de campana
+              Subir imagen de campaña
               <input className="hidden" type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => void uploadCampaignImage(event.target.files?.[0])} />
             </label>
           )}
@@ -1231,7 +1231,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
         <div className="mt-4 flex flex-wrap gap-2">
           <button className="button-primary" disabled={saving}>
             {editingId ? <Save size={17} /> : <Plus size={17} />}
-            {editingId ? "Guardar cambios" : "Crear campana"}
+            {editingId ? "Guardar cambios" : "Crear campaña"}
           </button>
           {editingId && (
             <button type="button" className="button-secondary" onClick={() => {
@@ -1247,7 +1247,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
       </form>
 
       <div className="order-1 space-y-2 xl:order-2">
-        {campaigns.length === 0 && <EmptyState text="No hay campanas reales creadas." />}
+        {campaigns.length === 0 && <EmptyState text="No hay campañas reales creadas." />}
         {campaigns.map((campaign) => {
           const progress = campaign.progress ?? {};
           const pending = Number(progress.pending ?? 0);
@@ -1300,7 +1300,7 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
               </button>
               <button className="button-secondary" onClick={() => runAction(async () => {
                 const result = await api.previewCampaign(campaign.id);
-                setPreview((current) => ({ ...current, [campaign.id]: `${result.count} leads elegibles para esta campana.` }));
+                setPreview((current) => ({ ...current, [campaign.id]: `${result.count} leads elegibles para esta campaña.` }));
               })}>
                 <Search size={16} />
                 Vista previa
@@ -1313,11 +1313,11 @@ function CampaignsView({ campaigns, leads, mediaAssets, systemStatus, onReload, 
                 <Pause size={16} />
                 Pausar
               </button>
-              <button className="button-secondary" disabled={pending === 0} onClick={() => window.confirm("Cancelar todos los envios pendientes de esta campana?") && runAction(() => api.cancelPendingCampaign(campaign.id))}>
+              <button className="button-secondary" disabled={pending === 0} onClick={() => window.confirm("¿Cancelar todos los envíos pendientes de esta campaña?") && runAction(() => api.cancelPendingCampaign(campaign.id))}>
                 <ArchiveX size={16} />
                 Cancelar pendientes
               </button>
-              <button className="button-secondary" onClick={() => window.confirm("Eliminar campana?") && runAction(() => api.deleteCampaign(campaign.id))}>
+              <button className="button-secondary" onClick={() => window.confirm("¿Eliminar campaña?") && runAction(() => api.deleteCampaign(campaign.id))}>
                 <Trash2 size={16} />
                 Eliminar
               </button>
@@ -1901,7 +1901,7 @@ function SettingsView(props: {
   }
 
   async function resetCrmData() {
-    const confirmText = window.prompt("Esto borra inbox, leads, campanas, compras y colas de prueba. Escribe REINICIAR para continuar.");
+    const confirmText = window.prompt("Esto borra inbox, leads, campañas, compras y colas de prueba. Escribe REINICIAR para continuar.");
     if (confirmText !== "REINICIAR") return;
 
     try {

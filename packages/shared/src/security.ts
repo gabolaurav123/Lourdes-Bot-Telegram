@@ -74,7 +74,7 @@ export function canMessageLead(
   if (!lead.userWroteFirst && !lead.conversationActive) reasons.push("El usuario no inicio una conversacion valida");
 
   if (intent === "campaign" && !lead.optInCommercial) {
-    reasons.push("La campana requiere opt-in comercial");
+    reasons.push("La campaña requiere opt-in comercial");
   }
 
   if ((intent === "follow_up" || options.commercial) && !lead.followUpAllowed) {

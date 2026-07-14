@@ -113,7 +113,7 @@ class CampaignService {
       throw requestError("No hay destinatarios elegibles. Confirma opt-in, permiso de seguimiento y conversacion valida en Leads.");
     }
     if (campaign.imageId && (!campaign.image || campaign.image.deletedAt)) {
-      throw requestError("La imagen de la campana no esta disponible. Quitala o sube otra antes de activar.");
+      throw requestError("La imagen de la campaña no está disponible. Quítala o sube otra antes de activar.");
     }
 
     const eligibleIds = leads.map((lead) => lead.id);
@@ -155,7 +155,7 @@ class CampaignService {
 
     const count = await this.prepareRecipients(campaignId);
     if (count === 0) {
-      throw requestError("La campana no tiene envios pendientes. Los destinatarios ya fueron enviados o excluidos.", 409);
+      throw requestError("La campaña no tiene envíos pendientes. Los destinatarios ya fueron enviados o excluidos.", 409);
     }
 
     const current = await prisma.campaign.findUniqueOrThrow({ where: { id: campaignId } });
