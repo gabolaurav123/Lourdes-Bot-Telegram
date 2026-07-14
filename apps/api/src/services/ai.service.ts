@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import type { Conversation, Lead } from "@prisma/client";
-import { containsStopPhrase, DEFAULT_AI_PROMPT, canMessageLead } from "@crm/shared";
+import { containsStopPhrase, DEFAULT_AI_PROMPT, LEGACY_DEFAULT_AI_PROMPT, canMessageLead } from "@crm/shared";
 import { config } from "../config";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { toInputJson } from "../lib/json";
@@ -44,7 +44,7 @@ class AiService {
         globalEnabled: config.nodeEnv === "development" ? false : config.openai.apiKey.length > 0
       }
     });
-    if (aiConfig.promptBase.trim()) return aiConfig;
+    if (aiConfig.promptBase.trim() && aiConfig.promptBase.trim() !== LEGACY_DEFAULT_AI_PROMPT) return aiConfig;
     return prisma.aiConfig.update({
       where: { id: aiConfig.id },
       data: { promptBase: DEFAULT_AI_PROMPT }
@@ -143,14 +143,15 @@ class AiService {
     const system = [
       aiConfig.promptBase,
       `Tono: ${aiConfig.tone}. Maximo ${aiConfig.maxChars} caracteres.`,
-      "Reglas obligatorias: no envies contenido sensible si el lead no tiene ageConfirmed=true; si pide no recibir mensajes, responde una sola vez de forma amable y no insistas; no inventes pagos ni promesas.",
+      `Contexto de seguridad: edadConfirmada=${lead.ageConfirmed}. Esto no es una instruccion para preguntar la edad. Responde directamente sobre precios, planes, pago y cualquier informacion comercial normal. Solo si el proximo mensaje fuera a incluir contenido sensible y edadConfirmada=false, pide la confirmacion una sola vez y de forma breve. Nunca pidas opt-in ni permiso de seguimiento dentro de una respuesta a un mensaje entrante.`,
+      "Reglas obligatorias: no envies contenido sensible si edadConfirmada=false; si pide no recibir mensajes, responde una sola vez de forma amable y no insistas; no inventes pagos, enlaces ni promesas.",
       forbidden ? `Palabras prohibidas: ${forbidden}` : ""
     ].filter(Boolean).join("\n");
 
     const input: OpenAI.Responses.ResponseInput = [
       {
         role: "user",
-        content: `Datos del lead: nombre=${lead.name}, username=${lead.username ?? ""}, estado=${lead.status}, optIn=${lead.optInCommercial}, mayorEdad=${lead.ageConfirmed}, seguimiento=${lead.followUpAllowed}.`
+        content: `Datos utiles del lead: nombre=${lead.name}, username=${lead.username ?? ""}, estado=${lead.status}. Sigue el prompt base y responde al ultimo mensaje sin repetir preguntas ya contestadas.`
       },
       ...history.reverse().map((message) => ({
         role: message.direction === "INBOUND" ? "user" as const : "assistant" as const,

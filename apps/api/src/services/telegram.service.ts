@@ -5,7 +5,7 @@ import { CustomFile } from "telegram/client/uploads";
 import { NewMessage, type NewMessageEvent } from "telegram/events";
 import { StringSession } from "telegram/sessions";
 import type { ConversationType, Lead, MessageStatus } from "@prisma/client";
-import { containsStopPhrase } from "@crm/shared";
+import { confirmsAdultAge, containsStopPhrase } from "@crm/shared";
 import { config } from "../config";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { prisma } from "../lib/prisma";
@@ -523,7 +523,29 @@ class TelegramService {
 
     await automationService.scheduleForTrigger("NEW_MESSAGE_RECEIVED", lead.id, { text });
 
-    const updatedLead = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    let updatedLead = await prisma.lead.findUniqueOrThrow({ where: { id: lead.id } });
+    if (!updatedLead.ageConfirmed) {
+      const previousOutbound = await prisma.message.findFirst({
+        where: { conversationId: conversation.id, direction: "OUTBOUND" },
+        orderBy: { createdAt: "desc" },
+        select: { body: true }
+      });
+      if (confirmsAdultAge(text, previousOutbound?.body ?? "")) {
+        updatedLead = await prisma.lead.update({
+          where: { id: lead.id },
+          data: { ageConfirmed: true }
+        });
+        await prisma.auditLog.create({
+          data: {
+            action: "LEAD_AGE_CONFIRMED_FROM_REPLY",
+            entityType: "Lead",
+            entityId: lead.id,
+            metadata: { conversationId: conversation.id }
+          }
+        });
+        await automationService.scheduleForTrigger("AGE_CONFIRMED", lead.id);
+      }
+    }
     try {
       const aiReply = await aiService.generateReply(updatedLead, conversation, text);
       if (aiReply.text) {
