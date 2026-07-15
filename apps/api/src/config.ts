@@ -46,6 +46,7 @@ export const config = {
     apiKey: process.env.OPENAI_API_KEY ?? "",
     model: process.env.OPENAI_MODEL ?? "gpt-4.1-nano"
   },
+  paymentLink: process.env.PAYMENT_LINK?.trim() ?? "",
   media: {
     storage: process.env.MEDIA_STORAGE ?? "database",
     localDir: process.env.MEDIA_LOCAL_DIR ?? "storage/media",

@@ -58,6 +58,7 @@ import { StatCard } from "./components/StatCard";
 type IconType = typeof LayoutDashboard;
 type Section = "dashboard" | "inbox" | "leads" | "campaigns" | "automations" | "templates" | "media" | "purchases" | "settings";
 type TelegramStatus = { status: string; qrCodeDataUrl?: string | null; username?: string | null };
+type GeneralSettings = { paymentLink?: string };
 type AiConfig = Record<string, unknown> & {
   model?: string;
   promptBase?: string;
@@ -202,6 +203,7 @@ export function App() {
   const [mediaAssets, setMediaAssets] = useState<MediaAsset[]>([]);
   const [purchases, setPurchases] = useState<Purchase[]>([]);
   const [aiConfig, setAiConfig] = useState<AiConfig>({});
+  const [generalSettings, setGeneralSettings] = useState<GeneralSettings>({});
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [telegram, setTelegram] = useState<TelegramStatus>({ status: "DISCONNECTED" });
   const [composer, setComposer] = useState("");
@@ -238,7 +240,7 @@ export function App() {
   async function loadAll() {
     setLoadError("");
     try {
-      const [dashboardStats, leadItems, conversationItems, telegramStatus, campaignItems, automationItems, templateItems, mediaItems, purchaseItems, aiSettings, currentSystemStatus] = await Promise.all([
+      const [dashboardStats, leadItems, conversationItems, telegramStatus, campaignItems, automationItems, templateItems, mediaItems, purchaseItems, aiSettings, currentSystemStatus, currentSettings] = await Promise.all([
         api.dashboard(),
         api.leads(),
         api.conversations(),
@@ -249,7 +251,8 @@ export function App() {
         api.media(),
         api.purchases(),
         api.aiConfig(),
-        api.systemStatus()
+        api.systemStatus(),
+        api.settings()
       ]);
 
       setStats(dashboardStats);
@@ -268,6 +271,7 @@ export function App() {
       setPurchases(purchaseItems);
       setAiConfig(aiSettings);
       setSystemStatus(currentSystemStatus);
+      setGeneralSettings({ paymentLink: typeof currentSettings.paymentLink === "string" ? currentSettings.paymentLink : "" });
     } catch (error) {
       const detail = messageFromError(error);
       setStats(emptyStats);
@@ -550,9 +554,14 @@ export function App() {
               telegram={telegram}
               setTelegram={setTelegram}
               aiConfig={aiConfig}
+              generalSettings={generalSettings}
               systemStatus={systemStatus}
               onStartQr={startTelegramQr}
               onReloadAi={async () => setAiConfig(await api.aiConfig())}
+              onReloadSettings={async () => {
+                const current = await api.settings();
+                setGeneralSettings({ paymentLink: typeof current.paymentLink === "string" ? current.paymentLink : "" });
+              }}
               onReloadAll={loadAll}
               onError={setLoadError}
             />
@@ -1792,9 +1801,11 @@ function SettingsView(props: {
   telegram: TelegramStatus;
   setTelegram: (value: TelegramStatus) => void;
   aiConfig: AiConfig;
+  generalSettings: GeneralSettings;
   systemStatus: SystemStatus;
   onStartQr: () => Promise<void>;
   onReloadAi: () => Promise<void>;
+  onReloadSettings: () => Promise<void>;
   onReloadAll: () => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -1812,7 +1823,8 @@ function SettingsView(props: {
     allowedEnd: "23:59",
     timezone: "America/La_Paz",
     forbiddenWords: "",
-    globalEnabled: false
+    globalEnabled: false,
+    paymentLink: ""
   });
   const [aiTest, setAiTest] = useState("");
   const [aiSaveStatus, setAiSaveStatus] = useState("");
@@ -1834,31 +1846,35 @@ function SettingsView(props: {
       allowedEnd: String(props.aiConfig.allowedHours?.end ?? "23:59"),
       timezone: String(props.aiConfig.allowedHours?.timezone ?? "America/La_Paz"),
       forbiddenWords: Array.isArray(props.aiConfig.forbiddenWords) ? props.aiConfig.forbiddenWords.join(", ") : "",
-      globalEnabled: Boolean(props.aiConfig.globalEnabled)
+      globalEnabled: Boolean(props.aiConfig.globalEnabled),
+      paymentLink: String(props.generalSettings.paymentLink ?? "")
     });
-  }, [props.aiConfig]);
+  }, [props.aiConfig, props.generalSettings]);
 
   async function saveAi(event: FormEvent) {
     event.preventDefault();
     setAiSaveStatus("");
     try {
       const replacingKey = Boolean(aiForm.apiKey.trim());
-      await api.updateAiConfig({
-        model: aiForm.model,
-        apiKey: aiForm.apiKey || undefined,
-        promptBase: aiForm.promptBase,
-        temperature: Number(aiForm.temperature),
-        maxTokens: Number(aiForm.maxTokens),
-        maxChars: Number(aiForm.maxChars),
-        dailyReplyLimit: Number(aiForm.dailyReplyLimit),
-        historyMessages: Number(aiForm.historyMessages),
-        tone: aiForm.tone,
-        allowedHours: { start: aiForm.allowedStart, end: aiForm.allowedEnd, timezone: aiForm.timezone },
-        forbiddenWords: aiForm.forbiddenWords.split(",").map((word) => word.trim()).filter(Boolean),
-        globalEnabled: aiForm.globalEnabled
-      });
+      await Promise.all([
+        api.updateAiConfig({
+          model: aiForm.model,
+          apiKey: aiForm.apiKey || undefined,
+          promptBase: aiForm.promptBase,
+          temperature: Number(aiForm.temperature),
+          maxTokens: Number(aiForm.maxTokens),
+          maxChars: Number(aiForm.maxChars),
+          dailyReplyLimit: Number(aiForm.dailyReplyLimit),
+          historyMessages: Number(aiForm.historyMessages),
+          tone: aiForm.tone,
+          allowedHours: { start: aiForm.allowedStart, end: aiForm.allowedEnd, timezone: aiForm.timezone },
+          forbiddenWords: aiForm.forbiddenWords.split(",").map((word) => word.trim()).filter(Boolean),
+          globalEnabled: aiForm.globalEnabled
+        }),
+        api.updateSettings({ paymentLink: aiForm.paymentLink.trim() })
+      ]);
       setAiForm((current) => ({ ...current, apiKey: "" }));
-      await props.onReloadAi();
+      await Promise.all([props.onReloadAi(), props.onReloadSettings()]);
       setAiSaveStatus(replacingKey
         ? "API key guardada y cifrada. El campo queda vacio porque la clave no se vuelve a mostrar."
         : "Ajustes de IA guardados correctamente.");
@@ -2002,6 +2018,7 @@ function SettingsView(props: {
             type="password"
             placeholder={(props.aiConfig.apiKeyConfigured || props.aiConfig.encryptedApiKey) ? "Clave guardada - escribe solo para reemplazarla" : "sk-..."}
           />
+          <SettingInput label="Link de pago oficial" icon={CircleDollarSign} value={aiForm.paymentLink} onChange={(value) => setAiForm({ ...aiForm, paymentLink: value })} placeholder="https://..." />
           <SettingInput label="Responder desde" icon={CalendarClock} value={aiForm.allowedStart} onChange={(value) => setAiForm({ ...aiForm, allowedStart: value })} type="time" />
           <SettingInput label="Responder hasta" icon={CalendarClock} value={aiForm.allowedEnd} onChange={(value) => setAiForm({ ...aiForm, allowedEnd: value })} type="time" />
           <SettingInput label="Zona horaria" icon={CalendarClock} value={aiForm.timezone} onChange={(value) => setAiForm({ ...aiForm, timezone: value })} />

@@ -231,9 +231,18 @@ class AiService {
     });
 
     const forbidden = aiConfig.forbiddenWords.join(", ");
+    const paymentSetting = await prisma.setting.findUnique({
+      where: { key: "paymentLink" },
+      select: { value: true }
+    });
+    const storedPaymentLink = typeof paymentSetting?.value === "string" ? paymentSetting.value.trim() : "";
+    const paymentLink = storedPaymentLink || config.paymentLink;
     const system = [
       aiConfig.promptBase.slice(0, MAX_PROMPT_CHARS),
       `Tono: ${aiConfig.tone}. Maximo ${aiConfig.maxChars} caracteres.`,
+      paymentLink
+        ? `Enlace de pago oficial: ${paymentLink}. Cuando corresponda cobrar o el usuario pida como pagar, usa exactamente este enlace. No inventes ni modifiques el enlace.`
+        : "No hay un enlace de pago oficial configurado. No inventes uno; indica que se lo confirmaran manualmente.",
       `Contexto de seguridad: edadConfirmada=${lead.ageConfirmed}. Esto no es una instruccion para preguntar la edad. Responde directamente sobre precios, planes, pago y cualquier informacion comercial normal. Solo si el proximo mensaje fuera a incluir contenido sensible y edadConfirmada=false, pide la confirmacion una sola vez y de forma breve. Nunca pidas opt-in ni permiso de seguimiento dentro de una respuesta a un mensaje entrante.`,
       "Reglas obligatorias: no envies contenido sensible si edadConfirmada=false; si pide no recibir mensajes, responde una sola vez de forma amable y no insistas; no inventes pagos, enlaces ni promesas.",
       forbidden ? `Palabras prohibidas: ${forbidden}` : ""
@@ -308,7 +317,7 @@ class AiService {
         model: aiConfig.model,
         instructions: "Eres una prueba tecnica. Responde de forma muy breve.",
         input: "Responde exactamente: CONEXION_OK",
-        max_output_tokens: 15,
+        max_output_tokens: 16,
         store: false
       });
       await this.recordUsage(response, aiConfig.model, "test");

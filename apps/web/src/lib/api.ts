@@ -257,5 +257,7 @@ export const api = {
   updateAiConfig: (payload: Record<string, unknown>) => request<Record<string, unknown>>("/api/ai/config", { method: "PUT", body: JSON.stringify(payload) }),
   setAiEnabled: (enabled: boolean) => request<Record<string, unknown>>("/api/ai/enabled", { method: "PATCH", body: JSON.stringify({ enabled }) }),
   testAi: () => request<{ ok: boolean; model: string; response: string }>("/api/ai/test", { method: "POST" }),
-  systemStatus: () => request<SystemStatus>("/api/settings/system-status")
+  systemStatus: () => request<SystemStatus>("/api/settings/system-status"),
+  settings: () => request<Record<string, unknown>>("/api/settings"),
+  updateSettings: (payload: Record<string, unknown>) => request<{ ok: boolean }>("/api/settings", { method: "PUT", body: JSON.stringify(payload) })
 };

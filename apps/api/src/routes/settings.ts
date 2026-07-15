@@ -30,6 +30,21 @@ settingsRouter.put(
   asyncHandler(async (req, res) => {
     const entries = Object.entries(req.body ?? {});
     for (const [key, value] of entries) {
+      if (key === "paymentLink" && value !== "") {
+        if (typeof value !== "string" || value.length > 2_000) {
+          const error = new Error("El link de pago no es valido.");
+          (error as Error & { status?: number }).status = 400;
+          throw error;
+        }
+        try {
+          const url = new URL(value);
+          if (url.protocol !== "https:") throw new Error("invalid protocol");
+        } catch {
+          const error = new Error("El link de pago debe ser una URL completa que empiece con https://.");
+          (error as Error & { status?: number }).status = 400;
+          throw error;
+        }
+      }
       const sensitive = key.toLowerCase().includes("key") || key.toLowerCase().includes("secret");
       const storedValue = sensitive && typeof value === "string" ? encryptSecret(value) : value;
       await prisma.setting.upsert({
