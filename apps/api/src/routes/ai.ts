@@ -6,12 +6,14 @@ import { aiService } from "../services/ai.service";
 
 export const aiRouter = Router();
 
-function publicConfig(aiConfig: Awaited<ReturnType<typeof aiService.getConfig>>) {
+async function publicConfig(aiConfig: Awaited<ReturnType<typeof aiService.getConfig>>) {
+  const usageLast24Hours = await aiService.getUsageLast24Hours(aiConfig.dailyReplyLimit);
   return {
     ...aiConfig,
     encryptedApiKey: Boolean(aiConfig.encryptedApiKey),
     apiKeyConfigured: Boolean(aiConfig.encryptedApiKey || process.env.OPENAI_API_KEY),
-    apiKeySource: aiConfig.encryptedApiKey ? "panel" : process.env.OPENAI_API_KEY ? "environment" : "none"
+    apiKeySource: aiConfig.encryptedApiKey ? "panel" : process.env.OPENAI_API_KEY ? "environment" : "none",
+    usageLast24Hours
   };
 }
 
@@ -19,7 +21,7 @@ aiRouter.get(
   "/config",
   asyncHandler(async (_req, res) => {
     const config = await aiService.getConfig();
-    res.json(publicConfig(config));
+    res.json(await publicConfig(config));
   })
 );
 
@@ -29,7 +31,7 @@ aiRouter.put(
   asyncHandler(async (req, res) => {
     const updated = await aiService.updateConfig(req.body);
     await auditLog(req, "AI_CONFIG_UPDATED");
-    res.json(publicConfig(updated));
+    res.json(await publicConfig(updated));
   })
 );
 
@@ -43,7 +45,7 @@ aiRouter.patch(
     }
     const updated = await aiService.setGlobalEnabled(req.body.enabled);
     await auditLog(req, req.body.enabled ? "AI_GLOBAL_ENABLED" : "AI_GLOBAL_DISABLED");
-    res.json(publicConfig(updated));
+    res.json(await publicConfig(updated));
   })
 );
 

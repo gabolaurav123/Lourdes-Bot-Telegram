@@ -5,7 +5,7 @@ import { CustomFile } from "telegram/client/uploads";
 import { NewMessage, type NewMessageEvent } from "telegram/events";
 import { StringSession } from "telegram/sessions";
 import type { ConversationType, Lead, MessageStatus } from "@prisma/client";
-import { EXCLUDED_LEAD_STATUSES, confirmsAdultAge, containsStopPhrase, isLegacyFalseStop } from "@crm/shared";
+import { confirmsAdultAge, containsStopPhrase, isLegacyFalseStop } from "@crm/shared";
 import { config } from "../config";
 import { decryptSecret, encryptSecret } from "../lib/crypto";
 import { prisma } from "../lib/prisma";
@@ -47,6 +47,7 @@ class TelegramService {
   private loginPromise?: Promise<unknown>;
   private readonly entityCache = new Map<string, TelegramTarget>();
   private readonly aiReplyLocks = new Set<string>();
+  private readonly aiReplyTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   private ensureConfig() {
     if (!config.telegram.apiId || !config.telegram.apiHash) {
@@ -196,6 +197,8 @@ class TelegramService {
   }
 
   async logout() {
+    for (const timer of this.aiReplyTimers.values()) clearTimeout(timer);
+    this.aiReplyTimers.clear();
     if (this.client) {
       await this.client.disconnect();
       this.client = undefined;
@@ -359,82 +362,6 @@ class TelegramService {
     ]);
 
     return candidates.length;
-  }
-
-  async processPendingAiReplies(limit = 10) {
-    const [session, aiConfig] = await Promise.all([
-      prisma.telegramSession.findUnique({
-        where: { label: config.telegram.sessionLabel },
-        select: { status: true }
-      }),
-      aiService.getConfig()
-    ]);
-    if (session?.status !== "CONNECTED" || !aiConfig.globalEnabled) {
-      return { checked: 0, sent: 0, failed: 0 };
-    }
-
-    const conversations = await prisma.conversation.findMany({
-      where: {
-        type: "PRIVATE",
-        responded: false,
-        leadId: { not: null },
-        lead: {
-          is: {
-            aiEnabled: true,
-            userWroteFirst: true,
-            conversationActive: true,
-            status: { notIn: [...EXCLUDED_LEAD_STATUSES] }
-          }
-        },
-        messages: { some: { direction: "INBOUND" } }
-      },
-      select: { id: true },
-      orderBy: { lastMessageAt: "asc" },
-      take: Math.max(limit * 5, 25)
-    });
-
-    let checked = 0;
-    let sent = 0;
-    let failed = 0;
-    for (const conversation of conversations) {
-      if (checked >= limit) break;
-      const result = await this.replyToLatestPendingInbound(conversation.id, false);
-      if (result === "not_pending" || result === "locked") continue;
-      checked += 1;
-      if (result === "sent") sent += 1;
-      if (result === "failed") failed += 1;
-    }
-
-    return { checked, sent, failed };
-  }
-
-  async repairPendingConversationFlags() {
-    const conversations = await prisma.conversation.findMany({
-      where: { type: "PRIVATE", leadId: { not: null }, messages: { some: { direction: "INBOUND" } } },
-      select: {
-        id: true,
-        messages: {
-          where: { direction: { in: ["INBOUND", "OUTBOUND"] } },
-          orderBy: { createdAt: "desc" },
-          take: 30
-        }
-      }
-    });
-    const pendingIds = conversations.flatMap((conversation) => {
-      const latestInbound = conversation.messages.find((message) => message.direction === "INBOUND");
-      if (!latestInbound) return [];
-      const sentAfter = conversation.messages.some(
-        (message) => message.direction === "OUTBOUND" && message.status === "SENT" && message.createdAt > latestInbound.createdAt
-      );
-      return sentAfter ? [] : [conversation.id];
-    });
-    if (!pendingIds.length) return 0;
-
-    const result = await prisma.conversation.updateMany({
-      where: { id: { in: pendingIds } },
-      data: { responded: false }
-    });
-    return result.count;
   }
 
   async sendMessageFromPanel(input: {
@@ -650,7 +577,7 @@ class TelegramService {
 
     const lead = await this.ensureLeadForConversation(conversation.id, chatId, conversation.name, text);
 
-    const storedMessage = await prisma.message.create({
+    await prisma.message.create({
       data: {
         telegramMessageId: String(message.id),
         conversationId: conversation.id,
@@ -690,10 +617,23 @@ class TelegramService {
 
     await automationService.scheduleForTrigger("NEW_MESSAGE_RECEIVED", lead.id, { text });
 
-    await this.replyToLatestPendingInbound(conversation.id, true, storedMessage.id);
+    this.scheduleLiveAiReply(conversation.id);
   }
 
-  private async replyToLatestPendingInbound(conversationId: string, auditSkipped: boolean, expectedInboundId?: string) {
+  private scheduleLiveAiReply(conversationId: string, delayMs = 2_000) {
+    const existing = this.aiReplyTimers.get(conversationId);
+    if (existing) clearTimeout(existing);
+
+    const timer = setTimeout(() => {
+      this.aiReplyTimers.delete(conversationId);
+      void this.replyToLatestPendingInbound(conversationId, true).then((result) => {
+        if (result === "locked") this.scheduleLiveAiReply(conversationId, delayMs);
+      });
+    }, delayMs);
+    this.aiReplyTimers.set(conversationId, timer);
+  }
+
+  private async replyToLatestPendingInbound(conversationId: string, auditSkipped: boolean) {
     if (this.aiReplyLocks.has(conversationId)) return "locked" as const;
     this.aiReplyLocks.add(conversationId);
 
@@ -712,7 +652,7 @@ class TelegramService {
       if (!conversation?.lead || conversation.type !== "PRIVATE") return "not_pending" as const;
 
       const latestInbound = conversation.messages.find((message) => message.direction === "INBOUND");
-      if (!latestInbound || (expectedInboundId && latestInbound.id !== expectedInboundId)) return "not_pending" as const;
+      if (!latestInbound) return "not_pending" as const;
       const sentAfterInbound = conversation.messages.find(
         (message) => message.direction === "OUTBOUND" && message.status === "SENT" && message.createdAt > latestInbound.createdAt
       );

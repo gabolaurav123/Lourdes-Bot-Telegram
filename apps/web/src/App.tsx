@@ -65,18 +65,28 @@ type AiConfig = Record<string, unknown> & {
   maxTokens?: number;
   tone?: string;
   maxChars?: number;
+  dailyReplyLimit?: number;
+  historyMessages?: number;
   globalEnabled?: boolean;
   encryptedApiKey?: boolean;
   apiKeyConfigured?: boolean;
   apiKeySource?: "panel" | "environment" | "none";
   allowedHours?: { start?: string; end?: string; timezone?: string };
   forbiddenWords?: string[];
+  usageLast24Hours?: {
+    calls: number;
+    limit: number;
+    remaining: number;
+    inputTokens: number;
+    outputTokens: number;
+    totalTokens: number;
+  };
 };
 
 const emptySystemStatus: SystemStatus = {
   worker: { online: false, state: "OFFLINE" },
   telegram: { configured: false, connected: false, status: "DISCONNECTED" },
-  openai: { configured: false, enabled: false, model: "gpt-4.1-mini" }
+  openai: { configured: false, enabled: false, model: "gpt-4.1-nano" }
 };
 
 const sections: { id: Section; label: string; icon: IconType }[] = [
@@ -1789,12 +1799,14 @@ function SettingsView(props: {
   onError: (message: string) => void;
 }) {
   const [aiForm, setAiForm] = useState({
-    model: "gpt-4.1-mini",
+    model: "gpt-4.1-nano",
     apiKey: "",
     promptBase: "",
     temperature: "0.4",
-    maxTokens: "400",
-    maxChars: "700",
+    maxTokens: "120",
+    maxChars: "350",
+    dailyReplyLimit: "30",
+    historyMessages: "4",
     tone: "calido, breve y natural",
     allowedStart: "00:00",
     allowedEnd: "23:59",
@@ -1809,12 +1821,14 @@ function SettingsView(props: {
 
   useEffect(() => {
     setAiForm({
-      model: String(props.aiConfig.model ?? "gpt-4.1-mini"),
+      model: String(props.aiConfig.model ?? "gpt-4.1-nano"),
       apiKey: "",
       promptBase: String(props.aiConfig.promptBase ?? ""),
       temperature: String(props.aiConfig.temperature ?? 0.4),
-      maxTokens: String(props.aiConfig.maxTokens ?? 400),
-      maxChars: String(props.aiConfig.maxChars ?? 700),
+      maxTokens: String(props.aiConfig.maxTokens ?? 120),
+      maxChars: String(props.aiConfig.maxChars ?? 350),
+      dailyReplyLimit: String(props.aiConfig.dailyReplyLimit ?? 30),
+      historyMessages: String(props.aiConfig.historyMessages ?? 4),
       tone: String(props.aiConfig.tone ?? "calido, breve y natural"),
       allowedStart: String(props.aiConfig.allowedHours?.start ?? "00:00"),
       allowedEnd: String(props.aiConfig.allowedHours?.end ?? "23:59"),
@@ -1836,6 +1850,8 @@ function SettingsView(props: {
         temperature: Number(aiForm.temperature),
         maxTokens: Number(aiForm.maxTokens),
         maxChars: Number(aiForm.maxChars),
+        dailyReplyLimit: Number(aiForm.dailyReplyLimit),
+        historyMessages: Number(aiForm.historyMessages),
         tone: aiForm.tone,
         allowedHours: { start: aiForm.allowedStart, end: aiForm.allowedEnd, timezone: aiForm.timezone },
         forbiddenWords: aiForm.forbiddenWords.split(",").map((word) => word.trim()).filter(Boolean),
@@ -1958,11 +1974,25 @@ function SettingsView(props: {
             </div>
           </div>
         )}
+        <div className="mb-4 rounded-md border border-amber-300 bg-amber-50 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-900">Modo económico activo</p>
+          <p className="mt-1 text-xs text-amber-800">
+            Solo responde mensajes nuevos. Uso en las últimas 24 horas: {props.aiConfig.usageLast24Hours?.calls ?? 0} de {props.aiConfig.usageLast24Hours?.limit ?? aiForm.dailyReplyLimit} llamadas, {props.aiConfig.usageLast24Hours?.totalTokens ?? 0} tokens.
+          </p>
+        </div>
         <div className="grid gap-4 md:grid-cols-2">
-          <SettingInput label="Modelo IA" icon={Bot} value={aiForm.model} onChange={(value) => setAiForm({ ...aiForm, model: value })} />
+          <label className="block">
+            <span className="field-label flex items-center gap-2"><Bot size={15} />Modelo IA</span>
+            <select className="field mt-2" value={aiForm.model} onChange={(event) => setAiForm({ ...aiForm, model: event.target.value })}>
+              <option value="gpt-4.1-nano">gpt-4.1-nano — más económico</option>
+              <option value="gpt-4.1-mini">gpt-4.1-mini — mayor calidad</option>
+            </select>
+          </label>
           <SettingInput label="Temperatura" icon={WandSparkles} value={aiForm.temperature} onChange={(value) => setAiForm({ ...aiForm, temperature: value })} type="number" />
-          <SettingInput label="Max tokens" icon={CalendarClock} value={aiForm.maxTokens} onChange={(value) => setAiForm({ ...aiForm, maxTokens: value })} type="number" />
-          <SettingInput label="Max caracteres" icon={MessageSquareText} value={aiForm.maxChars} onChange={(value) => setAiForm({ ...aiForm, maxChars: value })} type="number" />
+          <SettingInput label="Máximo de tokens por respuesta (30-160)" icon={CalendarClock} value={aiForm.maxTokens} onChange={(value) => setAiForm({ ...aiForm, maxTokens: value })} type="number" />
+          <SettingInput label="Máximo de caracteres (120-400)" icon={MessageSquareText} value={aiForm.maxChars} onChange={(value) => setAiForm({ ...aiForm, maxChars: value })} type="number" />
+          <SettingInput label="Límite de respuestas cada 24 h (1-200)" icon={ShieldCheck} value={aiForm.dailyReplyLimit} onChange={(value) => setAiForm({ ...aiForm, dailyReplyLimit: value })} type="number" />
+          <SettingInput label="Mensajes de historial (1-6)" icon={MessageSquareText} value={aiForm.historyMessages} onChange={(value) => setAiForm({ ...aiForm, historyMessages: value })} type="number" />
           <SettingInput label="Tono" icon={WandSparkles} value={aiForm.tone} onChange={(value) => setAiForm({ ...aiForm, tone: value })} />
           <SettingInput
             label={(props.aiConfig.apiKeyConfigured || props.aiConfig.encryptedApiKey) ? "Reemplazar API key OpenAI" : "API key OpenAI"}
@@ -1980,7 +2010,7 @@ function SettingsView(props: {
         <div className="mt-4 flex items-center justify-between gap-4 rounded-md border border-line bg-panel px-4 py-3">
           <div>
             <p className="text-sm font-semibold">Respuestas automaticas de IA</p>
-            <p className="mt-1 text-xs text-zinc-500">Responde todos los chats privados entrantes permitidos, excepto chats pausados o usuarios que pidieron stop.</p>
+            <p className="mt-1 text-xs text-zinc-500">Responde únicamente mensajes nuevos en chats privados. No recorre conversaciones antiguas ni pendientes.</p>
           </div>
           <button
             type="button"

@@ -69,7 +69,7 @@ async function main() {
     update: {},
     create: {
       id: "default",
-      model: process.env.OPENAI_MODEL ?? "gpt-4.1-mini",
+      model: process.env.OPENAI_MODEL ?? "gpt-4.1-nano",
       promptBase: DEFAULT_AI_PROMPT,
       globalEnabled: process.env.GLOBAL_AI_ENABLED === "true"
     }

@@ -405,13 +405,15 @@ model AuditLog {
 
 model AiConfig {
   id              String   @id @default(cuid())
-  model           String   @default("gpt-4.1-mini")
+  model           String   @default("gpt-4.1-nano")
   encryptedApiKey String?
   promptBase      String
   temperature     Float    @default(0.4)
-  maxTokens       Int      @default(400)
+  maxTokens       Int      @default(120)
   tone            String   @default("calido, breve y natural")
-  maxChars        Int      @default(700)
+  maxChars        Int      @default(350)
+  dailyReplyLimit Int      @default(30)
+  historyMessages Int      @default(4)
   allowedHours    Json     @default("{}")
   forbiddenWords  String[] @default([])
   globalEnabled   Boolean  @default(false)
